@@ -127,7 +127,8 @@ int   maxSpeed    = 255;
 int   searchSpeed = 110;
 int   lineDetTh   = 900;    // tổng black-strength tối thiểu để xem là thấy line
 
-#define CENTER_POS 3500     // vị trí trung tâm (8 cảm biến × 1000 / 2)
+#define DEFAULT_CENTER_POS 3500     // vị trí trung tâm mặc định cho 8 cảm biến
+int centerPos = DEFAULT_CENTER_POS;   // tâm thực tế, sẽ tự tính lại nếu bỏ cảm biến
 
 // =====================================================
 // Trạng thái robot
@@ -140,7 +141,7 @@ int oledPage = 0;  // 0–3
 // =====================================================
 // Biến debug runtime
 // =====================================================
-int   lastPos      = CENTER_POS;
+int   lastPos      = DEFAULT_CENTER_POS;
 int   lastErr      = 0;
 float integralErr  = 0.0f;   // tích lũy integral PID
 int   lastLPWM     = 0;
@@ -438,6 +439,23 @@ void clearCalibration() {
   }
 }
 
+// Tự tính tâm line theo các mắt còn dùng.
+// Nếu bỏ 1 mắt bên phải/trái thì PID không bị lệch tâm ảo nữa.
+void computeCenterPos() {
+  long sum = 0;
+  int count = 0;
+
+  for (int i = 0; i < NUM_SENSORS; i++) {
+    if (!SENSOR_ENABLED[i]) continue;
+
+    int idx = SENSOR_ORDER_REVERSED ? (NUM_SENSORS - 1 - i) : i;
+    sum += idx * 1000;
+    count++;
+  }
+
+  centerPos = (count > 0) ? (int)(sum / count) : DEFAULT_CENTER_POS;
+}
+
 void computeThresholds() {
   for (int i = 0; i < NUM_SENSORS; i++) {
     if (sensorMax[i] < sensorMin[i] + 10) sensorMax[i] = sensorMin[i] + 10;
@@ -482,11 +500,15 @@ void processSensors() {
 bool getLinePos(int &posOut) {
   processSensors();
   long ws = 0, total = 0;
+
   for (int i = 0; i < NUM_SENSORS; i++) {
+    if (!SENSOR_ENABLED[i]) continue;
+
     int idx = SENSOR_ORDER_REVERSED ? (NUM_SENSORS - 1 - i) : i;
     ws    += (long)sensorNorm[i] * idx * 1000;
     total += sensorNorm[i];
   }
+
   if (total < lineDetTh) return false;
   posOut = (int)(ws / total);
   return true;
@@ -826,7 +848,7 @@ void handleInputs() {
     // Áp dụng và kẹp giới hạn an toàn
     Kp          = constrain(vKp,    0.000f, 50.000f);
     Ki          = constrain(vKi,    0.000f, 20.000f);
-    Kd          = constrain(vKd,    0.000f,  5.000f);
+    Kd          = constrain(vKd,    0.000f,100.000f);
     baseSpeed   = constrain(vBase,  0, 255);
     maxSpeed    = constrain(vMax,   0, 255);
     searchSpeed = constrain(vSrch,  0, 255);
@@ -869,32 +891,64 @@ void handleInputs() {
 // Line following
 // =====================================================
 void runLineFollower() {
-  int  pos   = CENTER_POS;
+  int  pos   = centerPos;
   bool found = getLinePos(pos);
 
   lastFound = found;
   lastPos   = pos;
 
+  // Mất line: xoay tại chỗ thật rõ để tìm lại line.
   if (!found) {
-    // Mất line → xoay về phía lỗi cuối biết
-    if (lastErr < 0) setMotors(-searchSpeed,  searchSpeed);
-    else             setMotors( searchSpeed, -searchSpeed);
+    int spinPWM = constrain(max(searchSpeed, 140), 0, maxSpeed);
+
+    if (lastErr < 0) setMotors(-spinPWM,  spinPWM);
+    else             setMotors( spinPWM, -spinPWM);
     return;
   }
 
-  int err  = pos - CENTER_POS;
+  int err  = pos - centerPos;
   int dErr = err - lastErr;
   lastErr  = err;
 
-  // Tích phân – anti-windup: chỉ tích lũy khi chưa bão hòa
+  // Tích phân – anti-windup
   integralErr += err;
   integralErr  = constrain(integralErr, -5000.0f, 5000.0f);
 
-  float corr  = Kp * err + Ki * integralErr + Kd * dErr;
-  corr = constrain(corr, -200.0f, 200.0f);
+  float corr = Kp * err + Ki * integralErr + Kd * dErr;
 
-  int lPWM = constrain(baseSpeed + (int)corr, 0, maxSpeed);
-  int rPWM = constrain(baseSpeed - (int)corr, 0, maxSpeed);
+  int lPWM = 0;
+  int rPWM = 0;
+
+  // Ngưỡng đảo chiều. Giảm xuống để ông nhìn thấy bánh trong lùi rõ hơn.
+  // Nếu xe rung quá thì tăng lên 1000–1400.
+  const int REVERSE_ERR_TH = 1600;
+
+  if (abs(err) >= REVERSE_ERR_TH) {
+    // CUA GẮT: cưỡng bức 1 bánh tiến, 1 bánh lùi.
+    // Không phụ thuộc nhiều vào Kp nữa, nên chắc chắn sẽ thấy đảo chiều.
+    int mag = constrain(abs(err), REVERSE_ERR_TH, 3000);
+
+    int outerPWM = map(mag, REVERSE_ERR_TH, 3000, baseSpeed + 20, maxSpeed);
+    int innerPWM = map(mag, REVERSE_ERR_TH, 3000, 90, maxSpeed);
+
+    outerPWM = constrain(outerPWM, 0, maxSpeed);
+    innerPWM = constrain(innerPWM, 80, maxSpeed);
+
+    if (err > 0) {
+      // Line lệch sang phải -> quay phải: bánh trái tiến, bánh phải lùi
+      lPWM =  outerPWM;
+      rPWM = -innerPWM;
+    } else {
+      // Line lệch sang trái -> quay trái: bánh trái lùi, bánh phải tiến
+      lPWM = -innerPWM;
+      rPWM =  outerPWM;
+    }
+  } else {
+    // LỆCH NHẸ: PID bình thường, không đảo chiều để đỡ giật trên đường thẳng.
+    corr = constrain(corr, -(float)maxSpeed, (float)maxSpeed);
+    lPWM = constrain(baseSpeed + (int)corr, 0, maxSpeed);
+    rPWM = constrain(baseSpeed - (int)corr, 0, maxSpeed);
+  }
 
   setMotors(lPWM, rPWM);
 }
@@ -932,6 +986,8 @@ void begin() {
   }
 
   clearCalibration();
+  computeCenterPos();
+  Serial.printf("[SENSOR] centerPos=%d\n", centerPos);
   stopMotors();
   readAllRaw();
 
