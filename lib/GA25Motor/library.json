@@ -1,0 +1,14 @@
+{
+    "name": "GA25Motor",
+    "description": "Modular library for GA25-370 DC motor with quadrature encoder via TB6612FNG on ESP32. Modules: motor (PWM/dir), encoder (ESP32Encoder PCNT), pid (standalone PID), drive (facade). Features: hardware PCNT encoder, EMA-filtered RPM, anti-windup PID speed control.",
+    "keywords": ["GA25-370", "TB6612FNG", "ESP32Encoder", "encoder", "motor", "PID", "ESP32", "PCNT"],
+    "version": "2.0.0",
+    "authors": {
+        "name": "EC Challenge 2026"
+    },
+    "frameworks": "arduino",
+    "platforms": "espressif32",
+    "dependencies": {
+        "madhephaestus/ESP32Encoder": "^0.12.0"
+    }
+}

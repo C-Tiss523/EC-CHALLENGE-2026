@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ESP32 BLE Gamepad</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap');
+
+  :root {
+    --bg: #0a0c0f;
+    --panel: #0f1318;
+    --border: #1e2a35;
+    --accent: #00e5ff;
+    --accent2: #ff3d71;
+    --green: #39ff14;
+    --dim: #2a3a45;
+    --text: #8ba8b8;
+    --glow: 0 0 12px #00e5ff88;
+    --glow2: 0 0 12px #ff3d7188;
+  }
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Share Tech Mono', monospace;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    overflow-x: hidden;
+    background-image:
+      linear-gradient(rgba(0,229,255,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,229,255,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+
+  /* ─── Header ─────────────────────────────────────────── */
+  header {
+    width:100%; max-width:800px;
+    display:flex; align-items:center; justify-content:space-between;
+    padding: 18px 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  .logo {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 1rem; font-weight:900;
+    color: var(--accent);
+    text-shadow: var(--glow);
+    letter-spacing: 3px;
+  }
+  .logo span { color: var(--accent2); }
+
+  /* ─── Connect button ─────────────────────────────────── */
+  #connectBtn {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.75rem; letter-spacing: 2px;
+    padding: 8px 20px;
+    background: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    cursor: pointer;
+    transition: all .2s;
+    text-transform: uppercase;
+  }
+  #connectBtn:hover { background: var(--accent); color: var(--bg); box-shadow: var(--glow); }
+  #connectBtn.connected { border-color: var(--green); color: var(--green); }
+  #connectBtn.connected:hover { background: var(--green); color: var(--bg); }
+
+  /* ─── Status bar ─────────────────────────────────────── */
+  .statusbar {
+    width:100%; max-width:800px;
+    display:flex; gap:20px; align-items:center;
+    padding: 8px 24px;
+    font-size: 0.7rem; letter-spacing:1px;
+    border-bottom: 1px solid var(--border);
+  }
+  .dot {
+    width:8px; height:8px; border-radius:50%;
+    background: var(--dim); flex-shrink:0;
+    transition: background .3s;
+  }
+  .dot.on { background: var(--green); box-shadow: 0 0 6px var(--green); animation: blink 1.5s infinite; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  /* ─── Main layout ────────────────────────────────────── */
+  main {
+    width:100%; max-width:800px;
+    padding: 20px 16px;
+    display:flex; flex-direction:column; gap:16px;
+  }
+
+  /* ─── Gamepad shell ──────────────────────────────────── */
+  .gamepad {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 24px 20px;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    grid-template-rows: auto auto;
+    gap: 20px;
+    align-items: center;
+    position: relative;
+  }
+  .gamepad::before {
+    content:'';
+    position:absolute; top:0; left:50%; transform:translateX(-50%);
+    width:120px; height:3px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    opacity:0.6;
+  }
+
+  /* ─── D-Pad ──────────────────────────────────────────── */
+  .dpad {
+    display: grid;
+    grid-template-columns: repeat(3, 48px);
+    grid-template-rows: repeat(3, 48px);
+    gap: 4px;
+    justify-self: center;
+  }
+  .dpad-btn {
+    background: #0d1520;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    cursor: pointer;
+    display:flex; align-items:center; justify-content:center;
+    color: var(--dim);
+    font-size: 14px;
+    user-select:none;
+    transition: all .1s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .dpad-btn:empty { background:transparent; border-color:transparent; cursor:default; }
+  .dpad-btn.active, .dpad-btn:active {
+    background: var(--accent);
+    color: var(--bg);
+    box-shadow: var(--glow);
+    border-color: var(--accent);
+  }
+  #btn-up    { grid-column:2; grid-row:1; }
+  #btn-left  { grid-column:1; grid-row:2; }
+  #btn-center{ grid-column:2; grid-row:2; background:#0d1520; cursor:default; }
+  #btn-right { grid-column:3; grid-row:2; }
+  #btn-down  { grid-column:2; grid-row:3; }
+
+  /* ─── Center (logo + status) ─────────────────────────── */
+  .center-panel {
+    display:flex; flex-direction:column; align-items:center; gap:10px;
+  }
+  .mini-logo {
+    font-family:'Orbitron',sans-serif; font-size:0.6rem;
+    color:var(--dim); letter-spacing:3px;
+  }
+  .grip-indicator {
+    width:60px; height:60px; border-radius:50%;
+    border: 2px solid var(--border);
+    display:flex; align-items:center; justify-content:center;
+    font-size: 0.65rem; color: var(--dim);
+    position:relative; flex-direction:column; gap:2px;
+  }
+  .grip-indicator svg {
+    position:absolute; top:0; left:0; width:100%; height:100%;
+    transform: rotate(-90deg);
+  }
+  .grip-indicator circle {
+    fill:none; stroke:var(--border); stroke-width:2;
+  }
+  .grip-arc {
+    fill:none; stroke:var(--accent2); stroke-width:2;
+    stroke-dasharray: 157;
+    stroke-dashoffset: 157;
+    transition: stroke-dashoffset .2s;
+    stroke-linecap: round;
+  }
+  .grip-val { position:relative; z-index:1; font-size:0.7rem; color:var(--accent); }
+  .grip-lbl { position:relative; z-index:1; font-size:0.5rem; color:var(--dim); }
+
+  /* ─── ABXY Buttons ───────────────────────────────────── */
+  .abxy {
+    display: grid;
+    grid-template-columns: repeat(3, 48px);
+    grid-template-rows: repeat(3, 48px);
+    gap: 4px;
+    justify-self: center;
+  }
+  .abxy-btn {
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: #0d1520;
+    cursor: pointer;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.65rem; font-weight:700;
+    color: var(--dim);
+    display:flex; align-items:center; justify-content:center;
+    user-select:none;
+    transition: all .1s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #btn-y { grid-column:2; grid-row:1; }
+  #btn-x { grid-column:1; grid-row:2; }
+  #btn-b { grid-column:3; grid-row:2; }
+  #btn-a { grid-column:2; grid-row:3; }
+
+  #btn-a.active, #btn-a:active { background:#39ff14; color:#000; box-shadow: 0 0 12px #39ff1488; border-color:#39ff14; }
+  #btn-b.active, #btn-b:active { background:#ff3d71; color:#fff; box-shadow: var(--glow2); border-color:#ff3d71; }
+  #btn-x.active, #btn-x:active { background:#4488ff; color:#fff; box-shadow: 0 0 12px #4488ff88; border-color:#4488ff; }
+  #btn-y.active, #btn-y:active { background:#ffaa00; color:#000; box-shadow: 0 0 12px #ffaa0088; border-color:#ffaa00; }
+
+  /* ─── Joysticks ──────────────────────────────────────── */
+  .joysticks {
+    grid-column: 1 / -1;
+    display:flex; gap:24px; justify-content:space-around;
+  }
+  .stick-wrap { display:flex; flex-direction:column; align-items:center; gap:8px; }
+  .stick-lbl { font-size:0.6rem; letter-spacing:2px; color:var(--dim); }
+  .stick-zone {
+    width:100px; height:100px;
+    background: #0d1520;
+    border: 1px solid var(--border);
+    border-radius:50%;
+    position:relative;
+    cursor:pointer;
+    touch-action: none;
+  }
+  .stick-zone::before {
+    content:'';
+    position:absolute; inset:8px;
+    border-radius:50%;
+    border: 1px dashed var(--border);
+  }
+  .stick-thumb {
+    width:32px; height:32px;
+    background: var(--dim);
+    border-radius:50%;
+    position:absolute;
+    top:50%; left:50%;
+    transform:translate(-50%,-50%);
+    transition: background .1s;
+    pointer-events:none;
+    border: 1px solid #3a5060;
+  }
+  .stick-zone:active .stick-thumb,
+  .stick-zone.active .stick-thumb {
+    background: var(--accent);
+    box-shadow: var(--glow);
+  }
+  .stick-vals {
+    font-size:0.6rem; color:var(--dim);
+    display:flex; gap:8px;
+  }
+
+  /* ─── Gripper slider ─────────────────────────────────── */
+  .gripper-row {
+    display:flex; align-items:center; gap:14px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    padding: 14px 20px;
+    border-radius:4px;
+  }
+  .gripper-row label {
+    font-family:'Orbitron',sans-serif; font-size:0.65rem;
+    letter-spacing:2px; color:var(--accent2); white-space:nowrap;
+  }
+  input[type=range] {
+    flex:1; -webkit-appearance:none; appearance:none;
+    height:4px; background: var(--border); border-radius:2px; cursor:pointer;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance:none; width:18px; height:18px; border-radius:50%;
+    background: var(--accent2); border:2px solid var(--bg);
+    box-shadow: var(--glow2);
+  }
+  .gripper-num {
+    font-size:0.85rem; color:var(--accent2); min-width:30px; text-align:right;
+  }
+
+  /* ─── Log panel ──────────────────────────────────────── */
+  .log {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    padding: 10px 14px;
+    font-size: 0.65rem;
+    height: 100px;
+    overflow-y: auto;
+    color: var(--text);
+    border-radius:4px;
+  }
+  .log .line { padding: 1px 0; border-bottom: 1px solid var(--border); }
+  .log .line.btn-line { color: var(--accent); }
+  .log .ts { color: var(--dim); margin-right:8px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">ESP32<span>·</span>CTRL</div>
+  <button id="connectBtn">[ CONNECT BLE ]</button>
+</header>
+
+<div class="statusbar">
+  <div class="dot" id="statusDot"></div>
+  <span id="statusText">DISCONNECTED</span>
+</div>
+
+<main>
+  <div class="gamepad">
+    <!-- D-Pad -->
+    <div class="dpad">
+      <div></div>
+      <div class="dpad-btn" id="btn-up" data-btn="UP">▲</div>
+      <div></div>
+      <div class="dpad-btn" id="btn-left" data-btn="LEFT">◀</div>
+      <div class="dpad-btn" id="btn-center"></div>
+      <div class="dpad-btn" id="btn-right" data-btn="RIGHT">▶</div>
+      <div></div>
+      <div class="dpad-btn" id="btn-down" data-btn="DOWN">▼</div>
+      <div></div>
+    </div>
+
+    <!-- Center -->
+    <div class="center-panel">
+      <div class="mini-logo">GRIPPER</div>
+      <div class="grip-indicator">
+        <svg viewBox="0 0 60 60"><circle cx="30" cy="30" r="25"/><circle class="grip-arc" id="gripArc" cx="30" cy="30" r="25"/></svg>
+        <span class="grip-val" id="gripValCenter">0</span>
+        <span class="grip-lbl">%</span>
+      </div>
+    </div>
+
+    <!-- ABXY -->
+    <div class="abxy">
+      <div></div>
+      <div class="abxy-btn" id="btn-y" data-btn="Y">Y</div>
+      <div></div>
+      <div class="abxy-btn" id="btn-x" data-btn="X">X</div>
+      <div></div>
+      <div class="abxy-btn" id="btn-b" data-btn="B">B</div>
+      <div></div>
+      <div class="abxy-btn" id="btn-a" data-btn="A">A</div>
+      <div></div>
+    </div>
+
+    <!-- Joysticks -->
+    <div class="joysticks">
+      <div class="stick-wrap">
+        <span class="stick-lbl">LEFT STICK</span>
+        <div class="stick-zone" id="stickL">
+          <div class="stick-thumb" id="thumbL"></div>
+        </div>
+        <div class="stick-vals">
+          <span>X:<span id="lxVal">0</span></span>
+          <span>Y:<span id="lyVal">0</span></span>
+        </div>
+      </div>
+      <div class="stick-wrap">
+        <span class="stick-lbl">RIGHT STICK</span>
+        <div class="stick-zone" id="stickR">
+          <div class="stick-thumb" id="thumbR"></div>
+        </div>
+        <div class="stick-vals">
+          <span>X:<span id="rxVal">0</span></span>
+          <span>Y:<span id="ryVal">0</span></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Gripper -->
+  <div class="gripper-row">
+    <label>GRIPPER</label>
+    <input type="range" id="gripperSlider" min="0" max="255" value="0">
+    <span class="gripper-num" id="gripperNum">0</span>
+  </div>
+
+  <!-- Log -->
+  <div class="log" id="log"></div>
+</main>
+
+<script>
+// ── BLE UUIDs ──────────────────────────────────────────────────────────────────
+const SVC  = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
+const CMD  = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
+
+// ── State ──────────────────────────────────────────────────────────────────────
+const BTN = { UP:0x01, DOWN:0x02, LEFT:0x04, RIGHT:0x08, A:0x10, B:0x20, X:0x40, Y:0x80 };
+let buttons = 0;
+let leftX=0, leftY=0, rightX=0, rightY=0, gripper=0;
+let bleChar = null;
+let sendTimer = null;
+
+// ── Log ────────────────────────────────────────────────────────────────────────
+const logEl = document.getElementById('log');
+function log(msg, cls='') {
+  const ts = new Date().toTimeString().slice(0,8);
+  logEl.innerHTML = `<div class="line ${cls}"><span class="ts">${ts}</span>${msg}</div>` + logEl.innerHTML;
+}
+
+// ── BLE ────────────────────────────────────────────────────────────────────────
+document.getElementById('connectBtn').addEventListener('click', async () => {
+  try {
+    log('Scanning...');
+    const dev = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SVC] }]
+    });
+    dev.addEventListener('gattserverdisconnected', onDisconnect);
+    const server = await dev.gatt.connect();
+    const svc    = await server.getPrimaryService(SVC);
+    bleChar      = await svc.getCharacteristic(CMD);
+    setConnected(true);
+    log(`Connected: ${dev.name}`, 'btn-line');
+    startSending();
+  } catch(e) {
+    log(`Error: ${e.message}`);
+  }
+});
+
+function onDisconnect() {
+  setConnected(false);
+  bleChar = null;
+  stopSending();
+  log('Disconnected');
+}
+
+function setConnected(v) {
+  const btn = document.getElementById('connectBtn');
+  const dot = document.getElementById('statusDot');
+  document.getElementById('statusText').textContent = v ? 'CONNECTED' : 'DISCONNECTED';
+  btn.textContent = v ? '[ DISCONNECT ]' : '[ CONNECT BLE ]';
+  btn.className = v ? 'connected' : '';
+  dot.className = 'dot' + (v ? ' on' : '');
+}
+
+// ── Send packet ────────────────────────────────────────────────────────────────
+function buildPacket() {
+  const pkt = new Uint8Array(8);
+  pkt[0] = 0xAA;
+  pkt[1] = buttons;
+  pkt[2] = leftX  & 0xFF;
+  pkt[3] = leftY  & 0xFF;
+  pkt[4] = rightX & 0xFF;
+  pkt[5] = rightY & 0xFF;
+  pkt[6] = gripper;
+  let cs = 0; for(let i=0;i<7;i++) cs ^= pkt[i];
+  pkt[7] = cs;
+  return pkt;
+}
+
+async function sendPacket() {
+  if (!bleChar) return;
+  try { await bleChar.writeValueWithoutResponse(buildPacket()); }
+  catch(e) { log(`Send error: ${e.message}`); }
+}
+
+function startSending() { sendTimer = setInterval(sendPacket, 50); }
+function stopSending()  { clearInterval(sendTimer); }
+
+// ── Button press / release ─────────────────────────────────────────────────────
+function press(mask, name) {
+  if (buttons & mask) return;
+  buttons |= mask;
+  log(`BTN ${name} pressed`, 'btn-line');
+}
+function release(mask) { buttons &= ~mask; }
+
+document.querySelectorAll('[data-btn]').forEach(el => {
+  const name = el.dataset.btn;
+  const mask = BTN[name];
+  const onDown = e => { e.preventDefault(); el.classList.add('active'); press(mask, name); };
+  const onUp   = e => { e.preventDefault(); el.classList.remove('active'); release(mask); };
+  el.addEventListener('mousedown',  onDown);
+  el.addEventListener('mouseup',    onUp);
+  el.addEventListener('mouseleave', onUp);
+  el.addEventListener('touchstart', onDown, {passive:false});
+  el.addEventListener('touchend',   onUp,   {passive:false});
+});
+
+// ── Gripper slider ────────────────────────────────────────────────────────────
+const slider = document.getElementById('gripperSlider');
+const gripNum = document.getElementById('gripperNum');
+const gripArc = document.getElementById('gripArc');
+const gripCenter = document.getElementById('gripValCenter');
+
+slider.addEventListener('input', () => {
+  gripper = parseInt(slider.value);
+  gripNum.textContent = gripper;
+  const pct = gripper / 255;
+  gripArc.style.strokeDashoffset = 157 - (157 * pct);
+  gripCenter.textContent = Math.round(pct * 100);
+});
+
+// ── Joystick ──────────────────────────────────────────────────────────────────
+function setupStick(zoneId, thumbId, onMove) {
+  const zone  = document.getElementById(zoneId);
+  const thumb = document.getElementById(thumbId);
+  const r = 50, dr = 16; // zone radius, thumb deadzone
+  let active = false, originX, originY;
+
+  function move(cx, cy) {
+    const rect = zone.getBoundingClientRect();
+    let dx = cx - (rect.left + r);
+    let dy = cy - (rect.top  + r);
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    const maxD = r - dr;
+    if (dist > maxD) { dx *= maxD/dist; dy *= maxD/dist; }
+    thumb.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+    const nx = Math.round((dx / maxD) * 127);
+    const ny = Math.round((dy / maxD) * 127);
+    onMove(nx, ny);
+  }
+
+  function end() {
+    active = false;
+    zone.classList.remove('active');
+    thumb.style.transform = 'translate(-50%,-50%)';
+    onMove(0, 0);
+  }
+
+  zone.addEventListener('mousedown', e => {
+    active=true; zone.classList.add('active');
+    move(e.clientX, e.clientY);
+  });
+  window.addEventListener('mousemove', e => { if(active) move(e.clientX, e.clientY); });
+  window.addEventListener('mouseup',   () => { if(active) end(); });
+
+  zone.addEventListener('touchstart', e => {
+    e.preventDefault(); active=true; zone.classList.add('active');
+    move(e.touches[0].clientX, e.touches[0].clientY);
+  }, {passive:false});
+  zone.addEventListener('touchmove', e => {
+    e.preventDefault(); if(active) move(e.touches[0].clientX, e.touches[0].clientY);
+  }, {passive:false});
+  zone.addEventListener('touchend', end);
+}
+
+setupStick('stickL','thumbL',(x,y) => {
+  leftX = x; leftY = y;
+  document.getElementById('lxVal').textContent = x;
+  document.getElementById('lyVal').textContent = y;
+});
+setupStick('stickR','thumbR',(x,y) => {
+  rightX = x; rightY = y;
+  document.getElementById('rxVal').textContent = x;
+  document.getElementById('ryVal').textContent = y;
+});
+
+log('Ready — click CONNECT BLE to start');
+</script>
+</body>
+</html>

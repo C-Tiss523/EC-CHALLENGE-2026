@@ -4,6 +4,7 @@
  */
 
 #include "LineBot.h"
+#include "drive.h"
 
 namespace LineBot {
 
@@ -82,28 +83,40 @@ const bool SENSOR_ORDER_REVERSED = false;
 bool blackIsHigh = false;
 bool calibrated  = false;
 
+// Mask cảm biến: false = bỏ qua (hỏng/không dùng)
+// Cảm biến 0 bỏ qua vì bỏ hỏng
+const bool SENSOR_ENABLED[NUM_SENSORS] = { false, true, true, true, true, true, true, true };
+
 // =====================================================
-// Motor – TB6612FNG
+// Motor – GA25Motor Drive (TB6612FNG + Encoder + PID)
 // =====================================================
+// Chân kết nối TB6612FNG
 #define AIN1 25
 #define AIN2 33
 #define PWMA 32
-#define BIN1 26
-#define BIN2 27
+#define BIN1 27
+#define BIN2 26
 #define PWMB 14
 
-#define PWM_FREQ 20000
-#define PWM_RES    8
-#define CH_A       0
-#define CH_B       1
+// Chân encoder (input-only OK với ESP32, dùng PCNT hardware)
+#define ENAL 36
+#define ENBL 39
+#define ENAR 34
+#define ENBR 35
 
-const bool MOTOR_A_REV = false;   // đổi true nếu motor A quay ngược
-const bool MOTOR_B_REV = false;   // đổi true nếu motor B quay ngược
+// Kênh LEDC – mỗi Drive dùng 1 kênh
+#define CH_A 0
+#define CH_B 1
+
+// Đối tượng Drive cho motor trái (A) và phải (B)
+Drive motorL;
+Drive motorR;
 
 // =====================================================
 // Tham số điều khiển – tuỳ chỉnh qua BLE web dashboard
 // =====================================================
 float Kp          = 0.050f;
+float Ki          = 0.000f;   // tích phân – mặc định 0 (tắt)
 float Kd          = 0.220f;
 int   baseSpeed   = 150;
 int   maxSpeed    = 255;
@@ -123,11 +136,12 @@ int oledPage = 0;  // 0–3
 // =====================================================
 // Biến debug runtime
 // =====================================================
-int  lastPos   = CENTER_POS;
-int  lastErr   = 0;
-int  lastLPWM  = 0;
-int  lastRPWM  = 0;
-bool lastFound = false;
+int   lastPos      = CENTER_POS;
+int   lastErr      = 0;
+float integralErr  = 0.0f;   // tích lũy integral PID
+int   lastLPWM     = 0;
+int   lastRPWM     = 0;
+bool  lastFound    = false;
 
 // =====================================================
 // Calibration – 2 bước, không chặn loop
@@ -168,7 +182,7 @@ volatile bool bleCmdCal    = false;
 volatile bool bleNewParams = false;
 
 // Giá trị params tạm – được set trong callback, áp dụng trong loop()
-volatile float vKp, vKd;
+volatile float vKp, vKi, vKd;
 volatile int   vBase, vMax, vSrch, vLineTh;
 
 // ─── BLE Server callbacks ──────────────────────────
@@ -185,12 +199,12 @@ class BleServerCB : public BLEServerCallbacks {
 };
 
 // ─── Phân tích chuỗi config ───────────────────────
-// Định dạng: "KP:0.050|KD:0.220|BASE:150|MAX:255|SRCH:110|LINETH:900"
+// Định dạng: "KP:0.050|KI:0.000|KD:0.220|BASE:150|MAX:255|SRCH:110|LINETH:900"
 // Từng trường là tuỳ chọn (partial update OK)
 void parseConfigString(const String &s,
-                       float &kp, float &kd,
+                       float &kp, float &ki, float &kd,
                        int &base, int &mx, int &srch, int &lineTh) {
-  kp=Kp; kd=Kd; base=baseSpeed; mx=maxSpeed;
+  kp=Kp; ki=Ki; kd=Kd; base=baseSpeed; mx=maxSpeed;
   srch=searchSpeed; lineTh=lineDetTh;  // giá trị mặc định
 
   int p = 0;
@@ -203,6 +217,7 @@ void parseConfigString(const String &s,
       String key = tok.substring(0, col);
       String val = tok.substring(col + 1);
       if      (key == "KP")     kp     = val.toFloat();
+      else if (key == "KI")     ki     = val.toFloat();
       else if (key == "KD")     kd     = val.toFloat();
       else if (key == "BASE")   base   = val.toInt();
       else if (key == "MAX")    mx     = val.toInt();
@@ -219,13 +234,14 @@ class CfgCB : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *c) override {
     String v = c->getValue().c_str();
 
-    // Parse vao bien thuong truoc, vi vKp/vKd/... la volatile
-    float kpTmp, kdTmp;
+    // Parse vao bien thuong truoc, vi vKp/vKi/vKd/... la volatile
+    float kpTmp, kiTmp, kdTmp;
     int baseTmp, maxTmp, srchTmp, lineThTmp;
 
-    parseConfigString(v, kpTmp, kdTmp, baseTmp, maxTmp, srchTmp, lineThTmp);
+    parseConfigString(v, kpTmp, kiTmp, kdTmp, baseTmp, maxTmp, srchTmp, lineThTmp);
 
     vKp     = kpTmp;
+    vKi     = kiTmp;
     vKd     = kdTmp;
     vBase   = baseTmp;
     vMax    = maxTmp;
@@ -236,10 +252,10 @@ class CfgCB : public BLECharacteristicCallbacks {
   }
   // Laptop ĐỌC params hiện tại từ ESP32
   void onRead(BLECharacteristic *c) override {
-    char buf[72];
+    char buf[90];
     snprintf(buf, sizeof(buf),
-      "KP:%.3f|KD:%.3f|BASE:%d|MAX:%d|SRCH:%d|LINETH:%d",
-      Kp, Kd, baseSpeed, maxSpeed, searchSpeed, lineDetTh);
+      "KP:%.3f|KI:%.4f|KD:%.3f|BASE:%d|MAX:%d|SRCH:%d|LINETH:%d",
+      Kp, Ki, Kd, baseSpeed, maxSpeed, searchSpeed, lineDetTh);
     c->setValue(buf);
   }
 };
@@ -368,6 +384,12 @@ uint16_t readMuxChRawStable(uint8_t ch) {
 
 void readAllRaw() {
   for (int i = 0; i < NUM_SENSORS; i++) {
+    if (!SENSOR_ENABLED[i]) {
+      // Cảm biến bị vô hiệu: đặt về 0, bỏ qua
+      sensorRaw[i]  = 0;
+      sensorFilt[i] = 0;
+      continue;
+    }
     uint16_t v = readMuxChRawStable(i);
 
     if (!filtReady) {
@@ -384,23 +406,21 @@ void readAllRaw() {
 // =====================================================
 // Motor
 // =====================================================
-void driveMotor(int ch, int in1, int in2, int pwm, bool rev) {
-  pwm = constrain(pwm, -255, 255);
-  if (rev) pwm = -pwm;
-  if (pwm > 0)      { digitalWrite(in1, HIGH); digitalWrite(in2, LOW);  ledcWrite(ch,  pwm); }
-  else if (pwm < 0) { digitalWrite(in1, LOW);  digitalWrite(in2, HIGH); ledcWrite(ch, -pwm); }
-  else              { digitalWrite(in1, LOW);  digitalWrite(in2, LOW);  ledcWrite(ch,   0);  }
-}
+// driveMotor() không còn cần thiết – Drive::motor_run() xử lý nội bộ
 
 void setMotors(int l, int r) {
   l = constrain(l, -255, 255);
   r = constrain(r, -255, 255);
-  driveMotor(CH_A, AIN1, AIN2, l, MOTOR_A_REV);
-  driveMotor(CH_B, BIN1, BIN2, r, MOTOR_B_REV);
+  motorL.motor_run(l);
+  motorR.motor_run(r);
   lastLPWM = l;  lastRPWM = r;
 }
 
-void stopMotors() { setMotors(0, 0); }
+void stopMotors() {
+  motorL.motor_stop();
+  motorR.motor_stop();
+  lastLPWM = 0;  lastRPWM = 0;
+}
 
 // =====================================================
 // Sensor processing
@@ -424,6 +444,12 @@ void computeThresholds() {
 void processSensors() {
   readAllRaw();
   for (int i = 0; i < NUM_SENSORS; i++) {
+    if (!SENSOR_ENABLED[i]) {
+      // Cảm biến bị vô hiệu: luôn đặt về trắng
+      sensorNorm[i] = 0;
+      sensorBW[i]   = false;
+      continue;
+    }
     int lo = sensorMin[i], hi = sensorMax[i];
     if (hi < lo + 10) hi = lo + 10;
 
@@ -700,13 +726,15 @@ void drawPageThreshold() {
 
 void drawPageMotor() {
   display.setCursor(0,  0); display.print("PID  "); display.print(stateStr());
-  display.setCursor(0, 12); display.print("Kp:"); display.print(Kp, 3);
-  display.setCursor(64, 12); display.print("Kd:"); display.print(Kd, 3);
-  display.setCursor(0, 24); display.print("base:"); display.print(baseSpeed);
+  display.setCursor(0, 10); display.print("Kp:"); display.print(Kp, 3);
+  display.setCursor(64, 10); display.print("Ki:"); display.print(Ki, 4);
+  display.setCursor(0, 20); display.print("Kd:"); display.print(Kd, 3);
+  display.setCursor(64, 20); display.print("I:"); display.print((int)integralErr);
+  display.setCursor(0, 30); display.print("base:"); display.print(baseSpeed);
   display.print(" max:"); display.print(maxSpeed);
-  display.setCursor(0, 36); display.print("srch:"); display.print(searchSpeed);
+  display.setCursor(0, 40); display.print("srch:"); display.print(searchSpeed);
   display.print(" th:"); display.print(lineDetTh);
-  display.setCursor(0, 48); display.print("L:"); display.print(lastLPWM);
+  display.setCursor(0, 50); display.print("L:"); display.print(lastLPWM);
   display.print("  R:"); display.print(lastRPWM);
   display.setCursor(0, 58); display.print("BLE:");
   display.print(bleConnected ? "ON " : "-- ");
@@ -777,8 +805,9 @@ void handleInputs() {
         stopMotors();
         Serial.println("[BTN] STOP");
       } else {
-        robotState = ST_RUN;
-        lastErr = 0;
+        robotState  = ST_RUN;
+        lastErr     = 0;
+        integralErr = 0.0f;
         Serial.println("[BTN] RUN");
       }
     }
@@ -791,20 +820,23 @@ void handleInputs() {
     bleNewParams = false;
     // Áp dụng và kẹp giới hạn an toàn
     Kp          = constrain(vKp,    0.000f, 2.000f);
+    Ki          = constrain(vKi,    0.000f, 1.000f);
     Kd          = constrain(vKd,    0.000f, 5.000f);
     baseSpeed   = constrain(vBase,  0, 255);
     maxSpeed    = constrain(vMax,   0, 255);
     searchSpeed = constrain(vSrch,  0, 255);
     lineDetTh   = constrain(vLineTh, 50, 8000);
-    Serial.printf("[BLE] Params: Kp=%.3f Kd=%.3f base=%d max=%d srch=%d lineTh=%d\n",
-      Kp, Kd, baseSpeed, maxSpeed, searchSpeed, lineDetTh);
+    integralErr = 0.0f;  // reset tích phân khi đổi params
+    Serial.printf("[BLE] Params: Kp=%.3f Ki=%.4f Kd=%.3f base=%d max=%d srch=%d lineTh=%d\n",
+      Kp, Ki, Kd, baseSpeed, maxSpeed, searchSpeed, lineDetTh);
   }
 
   if (bleCmdRun) {
     bleCmdRun = false;
     if (calibrated && calPhase == CAL_IDLE) {
-      robotState = ST_RUN;
-      lastErr = 0;
+      robotState  = ST_RUN;
+      lastErr     = 0;
+      integralErr = 0.0f;
       Serial.println("[BLE] RUN");
     } else {
       Serial.println("[BLE] RUN ignored: chua calib xong.");
@@ -849,7 +881,11 @@ void runLineFollower() {
   int dErr = err - lastErr;
   lastErr  = err;
 
-  float corr  = Kp * err + Kd * dErr;
+  // Tích phân – anti-windup: chỉ tích lũy khi chưa bão hòa
+  integralErr += err;
+  integralErr  = constrain(integralErr, -5000.0f, 5000.0f);
+
+  float corr  = Kp * err + Ki * integralErr + Kd * dErr;
   corr = constrain(corr, -200.0f, 200.0f);
 
   int lPWM = constrain(baseSpeed + (int)corr, 0, maxSpeed);
@@ -873,14 +909,10 @@ void begin() {
   pinMode(MUX_S0, OUTPUT); pinMode(MUX_S1, OUTPUT); pinMode(MUX_S2, OUTPUT);
   digitalWrite(MUX_S0, LOW); digitalWrite(MUX_S1, LOW); digitalWrite(MUX_S2, LOW);
 
-  // Motor
-  pinMode(AIN1, OUTPUT); pinMode(AIN2, OUTPUT);
-  pinMode(BIN1, OUTPUT); pinMode(BIN2, OUTPUT);
-  digitalWrite(AIN1, LOW); digitalWrite(AIN2, LOW);
-  digitalWrite(BIN1, LOW); digitalWrite(BIN2, LOW);
-
-  ledcSetup(CH_A, PWM_FREQ, PWM_RES); ledcAttachPin(PWMA, CH_A);
-  ledcSetup(CH_B, PWM_FREQ, PWM_RES); ledcAttachPin(PWMB, CH_B);
+  // Motor – khởi tạo qua Drive (GA25Motor)
+  // motor_init(in1, in2, pwmPin, encA, encB, ledcCh)
+  motorL.motor_init(AIN1, AIN2, PWMA, ENAL, ENBL, CH_A);
+  motorR.motor_init(BIN1, BIN2, PWMB, ENAR, ENBR, CH_B);
 
   // ADC
   analogReadResolution(12);
