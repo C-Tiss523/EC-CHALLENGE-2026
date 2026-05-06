@@ -340,14 +340,21 @@
 
     <div class="param">
       <label>Kp</label>
-      <input type="range" id="sl-kp" min="0" max="0.5" step="0.001" value="0.05"
+      <input type="range" id="sl-kp" min="0" max="20" step="0.001" value="0.05"
              oninput="syncNum('kp')">
-      <input type="number" id="kp" min="0" max="2" step="0.001" value="0.050"
+      <input type="number" id="kp" min="0" max="20" step="0.001" value="0.050"
              oninput="syncSlider('kp')">
     </div>
     <div class="param">
+      <label>Ki</label>
+      <input type="range" id="sl-ki" min="0" max="20" step="0.0001" value="0"
+             oninput="syncNum('ki')">
+      <input type="number" id="ki" min="0" max="20" step="0.0001" value="0.0000"
+             oninput="syncSlider('ki')">
+    </div>
+    <div class="param">
       <label>Kd</label>
-      <input type="range" id="sl-kd" min="0" max="3" step="0.005" value="0.22"
+      <input type="range" id="sl-kd" min="0" max="5" step="0.005" value="0.22"
              oninput="syncNum('kd')">
       <input type="number" id="kd" min="0" max="5" step="0.001" value="0.220"
              oninput="syncSlider('kd')">
@@ -558,13 +565,14 @@ async function readConfig() {
   try {
     const val = await cfgChar.readValue();
     const txt = new TextDecoder().decode(val);
-    // Định dạng: KP:0.050|KD:0.220|BASE:150|MAX:255|SRCH:110|LINETH:900
+    // Định dạng: KP:0.050|KI:0.0000|KD:0.220|BASE:150|MAX:255|SRCH:110|LINETH:900
     const p = {};
     txt.split('|').forEach(tok => {
       const i = tok.indexOf(':');
       if (i > 0) p[tok.slice(0, i)] = tok.slice(i + 1);
     });
     setParamUI('kp',     p.KP,     3);
+    setParamUI('ki',     p.KI,     4);
     setParamUI('kd',     p.KD,     3);
     setParamUI('base',   p.BASE,   0);
     setParamUI('max',    p.MAX,    0);
@@ -591,6 +599,7 @@ async function sendConfig() {
   if (!cfgChar) return;
   const cfg = [
     'KP:'    + parseFloat(document.getElementById('kp').value).toFixed(3),
+    'KI:'    + parseFloat(document.getElementById('ki').value).toFixed(4),
     'KD:'    + parseFloat(document.getElementById('kd').value).toFixed(3),
     'BASE:'  + parseInt(document.getElementById('base').value),
     'MAX:'   + parseInt(document.getElementById('max').value),
@@ -616,7 +625,7 @@ async function sendConfig() {
 function syncNum(id) {
   const sl  = document.getElementById('sl-' + id);
   const num = document.getElementById(id);
-  const dec = ['kp','kd'].includes(id) ? 3 : 0;
+  const dec = id === 'ki' ? 4 : ['kp','kd'].includes(id) ? 3 : 0;
   num.value = dec ? parseFloat(sl.value).toFixed(dec) : sl.value;
 }
 

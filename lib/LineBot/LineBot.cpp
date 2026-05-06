@@ -819,9 +819,9 @@ void handleInputs() {
   if (bleNewParams) {
     bleNewParams = false;
     // Áp dụng và kẹp giới hạn an toàn
-    Kp          = constrain(vKp,    0.000f, 2.000f);
-    Ki          = constrain(vKi,    0.000f, 1.000f);
-    Kd          = constrain(vKd,    0.000f, 5.000f);
+    Kp          = constrain(vKp,    0.000f, 20.000f);
+    Ki          = constrain(vKi,    0.000f, 20.000f);
+    Kd          = constrain(vKd,    0.000f,  5.000f);
     baseSpeed   = constrain(vBase,  0, 255);
     maxSpeed    = constrain(vMax,   0, 255);
     searchSpeed = constrain(vSrch,  0, 255);
