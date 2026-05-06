@@ -20,43 +20,47 @@ namespace LineBot {
 Adafruit_SSD1306 display(SCREEN_W, SCREEN_H, &Wire, -1);
 
 // =====================================================
-// Nut bam - 1 nut duy nhat
-// Theo mach ban ve: 3V3 -- nut -- GPIO -- R 10k -- GND
-// => PULL-DOWN ngoai, ACTIVE HIGH
-// Binh thuong: GPIO = LOW
-// Bam nut:    GPIO = HIGH
-// Chi dung debounce, KHONG dung long-press.
-//
-// Ban dang ve vao IO2. Neu thuc te cam vao IO4 thi doi lai thanh 4.
-// Luu y IO2/IO4 deu la chan boot-strap, khong giu nut khi reset/nap code.
+// Nut bam – 2 nut, ACTIVE HIGH, pull-down ngoai 10k
+//   IO2 (BTN_ONE_PIN): calib WHITE/BLACK + RUN/STOP
+//   IO4 (BTN_TWO_PIN): calib WHITE/BLACK + RUN/STOP (giong IO2)
+// Luu y IO2/IO4 la chan boot-strap, KHONG giu nut khi reset/nap code!
+// BLE dashboard cung dieu khien duoc song song.
 // =====================================================
 #define BTN_ONE_PIN 2
+#define BTN_TWO_PIN 4
 #define DEBOUNCE_MS 40UL
 
-bool btnStable = LOW;
-bool btnLastRaw = LOW;
+// ─── Nut 1 (GPIO2) ────────────────────────────────
+bool btnStable    = LOW;
+bool btnLastRaw   = LOW;
 unsigned long btnLastChange = 0;
 
-// Tra ve true dung 1 lan khi nut vua duoc bam xuong.
-// ACTIVE HIGH: binh thuong LOW, bam = HIGH.
 bool buttonPressedEvent() {
   bool raw = digitalRead(BTN_ONE_PIN);
-
-  if (raw != btnLastRaw) {
-    btnLastRaw = raw;
-    btnLastChange = millis();
-  }
-
+  if (raw != btnLastRaw) { btnLastRaw = raw; btnLastChange = millis(); }
   if (millis() - btnLastChange > DEBOUNCE_MS) {
     if (raw != btnStable) {
       btnStable = raw;
-
-      if (btnStable == HIGH) {
-        return true;
-      }
+      if (btnStable == HIGH) return true;
     }
   }
+  return false;
+}
 
+// ─── Nut 2 (GPIO4) ────────────────────────────────
+bool btn2Stable   = LOW;
+bool btn2LastRaw  = LOW;
+unsigned long btn2LastChange = 0;
+
+bool button2PressedEvent() {
+  bool raw = digitalRead(BTN_TWO_PIN);
+  if (raw != btn2LastRaw) { btn2LastRaw = raw; btn2LastChange = millis(); }
+  if (millis() - btn2LastChange > DEBOUNCE_MS) {
+    if (raw != btn2Stable) {
+      btn2Stable = raw;
+      if (btn2Stable == HIGH) return true;
+    }
+  }
   return false;
 }
 
@@ -788,7 +792,8 @@ void renderSerial() {
 // Xử lý nút và lệnh BLE
 // =====================================================
 void handleInputs() {
-  bool pressed = buttonPressedEvent();
+  // Nhận tín hiệu từ cả GPIO2, GPIO4 và BLE
+  bool pressed = buttonPressedEvent() || button2PressedEvent();
 
   // ── 1 nút duy nhất, pull-down ngoài, active HIGH, chỉ debounce ─────────
   // Bấm lần 1 khi chưa calib        : lấy WHITE x500
@@ -819,7 +824,7 @@ void handleInputs() {
   if (bleNewParams) {
     bleNewParams = false;
     // Áp dụng và kẹp giới hạn an toàn
-    Kp          = constrain(vKp,    0.000f, 20.000f);
+    Kp          = constrain(vKp,    0.000f, 50.000f);
     Ki          = constrain(vKi,    0.000f, 20.000f);
     Kd          = constrain(vKd,    0.000f,  5.000f);
     baseSpeed   = constrain(vBase,  0, 255);
@@ -902,8 +907,9 @@ void begin() {
   delay(300);
   Serial.println("\n[BOOT] LineBot v2.4 active-high button");
 
-  // Nút bấm
+  // Nút bấm – GPIO2 & GPIO4 (pull-down ngoài, active HIGH)
   pinMode(BTN_ONE_PIN, INPUT);
+  pinMode(BTN_TWO_PIN, INPUT);
 
   // MUX
   pinMode(MUX_S0, OUTPUT); pinMode(MUX_S1, OUTPUT); pinMode(MUX_S2, OUTPUT);
@@ -936,12 +942,13 @@ void begin() {
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(14,  2); display.print("=== LINE BOT v2.3 ===");
-  display.setCursor(0,  16); display.print("BLE: "); display.print(BLE_DEVICE_NAME);
-  display.setCursor(0,  28); display.print("Nut ACTIVE HIGH");
-  display.setCursor(0,  38); display.print("Lan 1: WHITE x500");
-  display.setCursor(0,  48); display.print("Lan 2: BLACK x500");
-  display.setCursor(0,  58); display.print("Sau do: RUN/STOP");
+  display.setCursor(10,  0); display.print("== LINE BOT v2.5 ==");
+  display.setCursor(0,  10); display.print("BLE: "); display.print(BLE_DEVICE_NAME);
+  display.setCursor(0,  20); display.print("Nut IO2 & IO4 ACT-HI");
+  display.setCursor(0,  30); display.print("[1] WHITE x500");
+  display.setCursor(0,  39); display.print("[2] BLACK x500");
+  display.setCursor(0,  48); display.print("[3+] RUN / STOP");
+  display.setCursor(0,  57); display.print("BLE: CAL/RUN/STOP ok");
   display.display();
   delay(2500);
 }
