@@ -5,8 +5,12 @@
 
 #include "LineBot.h"
 #include "drive.h"
+#include <Preferences.h>
 
 namespace LineBot {
+
+// NVS – lưu params PID qua reboot
+Preferences prefs;
 
 // =====================================================
 // OLED
@@ -147,7 +151,6 @@ float integralErr  = 0.0f;   // tích lũy integral PID
 int   lastLPWM     = 0;
 int   lastRPWM     = 0;
 bool  lastFound    = false;
-
 // =====================================================
 // Calibration – 2 bước, không chặn loop
 // Bước 1: đặt toàn bộ 8 mắt trên NỀN TRẮNG, lấy 500 mẫu
@@ -856,6 +859,18 @@ void handleInputs() {
     integralErr = 0.0f;  // reset tích phân khi đổi params
     Serial.printf("[BLE] Params: Kp=%.3f Ki=%.4f Kd=%.3f base=%d max=%d srch=%d lineTh=%d\n",
       Kp, Ki, Kd, baseSpeed, maxSpeed, searchSpeed, lineDetTh);
+
+    // ── Lưu vào NVS để giữ sau khi reboot ───────
+    prefs.begin("linebot", false);
+    prefs.putFloat("kp",     Kp);
+    prefs.putFloat("ki",     Ki);
+    prefs.putFloat("kd",     Kd);
+    prefs.putInt  ("base",   baseSpeed);
+    prefs.putInt  ("max",    maxSpeed);
+    prefs.putInt  ("srch",   searchSpeed);
+    prefs.putInt  ("lineth", lineDetTh);
+    prefs.end();
+    Serial.println("[NVS] Params saved.");
   }
 
   if (bleCmdRun) {
@@ -890,69 +905,141 @@ void handleInputs() {
 // =====================================================
 // Line following
 // =====================================================
+/*
+ * ============================================================
+ * LineBot – runLineFollower() đã sửa
+ * Thay thế toàn bộ phần "Line following" trong LineBot.cpp
+ * Giữ nguyên tất cả phần còn lại (BLE, OLED, Calibration,...)
+ * ============================================================
+ */
+
+// =====================================================
+// Biến mới – thêm vào cùng chỗ khai báo biến debug
+// (ngay sau   bool  lastFound = false;  )
+// =====================================================
+int   lostLineDir   = 0;        // +1=mất về phải, -1=mất về trái
+bool  wasReversing  = false;    // đang ở chế độ cua gắt?
+float filtDErr      = 0.0f;     // derivative đã lọc IIR
+unsigned long lostLineTime = 0; // thời điểm mất line
+
+// =====================================================
+// Line following – SỬA TOÀN BỘ
+// =====================================================
 void runLineFollower() {
+
+  // ── Đọc vị trí line ─────────────────────────────
   int  pos   = centerPos;
   bool found = getLinePos(pos);
+
+  // ── Ghi nhớ hướng ngay khi vừa mất line ─────────
+  if (lastFound && !found) {
+    lostLineDir  = (lastErr >= 0) ? 1 : -1;
+    lostLineTime = millis();
+  }
 
   lastFound = found;
   lastPos   = pos;
 
-  // Mất line: xoay tại chỗ thật rõ để tìm lại line.
+  // ── Mất line: xoay đúng chiều + timeout 3s ──────
   if (!found) {
-    int spinPWM = constrain(max(searchSpeed, 140), 0, maxSpeed);
 
-    if (lastErr < 0) setMotors(-spinPWM,  spinPWM);
-    else             setMotors( spinPWM, -spinPWM);
+    // Dừng hẳn nếu mất line quá 3 giây
+    if (millis() - lostLineTime > 3000) {
+      stopMotors();
+      robotState = ST_STOP;
+      Serial.println("[ERR] Mat line >3s, tu dong dung.");
+      return;
+    }
+
+    // Tốc độ tìm line tỷ lệ với thời gian đã mất (bắt đầu nhẹ, tăng dần)
+    unsigned long elapsed = millis() - lostLineTime;
+    int spinPWM = map((int)elapsed, 0, 1500, searchSpeed, min(searchSpeed + 60, maxSpeed));
+    spinPWM = constrain(spinPWM, searchSpeed, maxSpeed);
+
+    if (lostLineDir > 0) setMotors( spinPWM, -spinPWM);   // quay phải
+    else                 setMotors(-spinPWM,  spinPWM);   // quay trái
     return;
   }
 
-  int err  = pos - centerPos;
-  int dErr = err - lastErr;
-  lastErr  = err;
+  // ── Tính sai số ──────────────────────────────────
+  int   err  = pos - centerPos;
+  int   dErr = err - lastErr;
+  lastErr    = err;
 
-  // Tích phân – anti-windup
+  // ── Derivative lọc IIR (giảm giật khi đột ngột) ──
+  filtDErr = filtDErr * 0.55f + (float)dErr * 0.45f;
+
+  // ── Integral với anti-windup ──────────────────────
   integralErr += err;
   integralErr  = constrain(integralErr, -5000.0f, 5000.0f);
 
-  float corr = Kp * err + Ki * integralErr + Kd * dErr;
+  float corr = Kp * (float)err + Ki * integralErr + Kd * filtDErr;
 
-  int lPWM = 0;
-  int rPWM = 0;
+  // ─────────────────────────────────────────────────
+  // 3 VÙNG ĐIỀU KHIỂN
+  //
+  //  Vùng 1  |err| < TH_SOFT   → PID bình thường
+  //  Vùng 2  TH_SOFT..TH_HARD  → PID mạnh + giảm tốc nhẹ, chưa đảo chiều
+  //  Vùng 3  |err| > TH_HARD   → Đảo chiều hoàn toàn + braking
+  //
+  // Ngưỡng động theo baseSpeed để không cần chỉnh lại khi đổi tốc độ
+  // ─────────────────────────────────────────────────
+  int TH_SOFT = map(baseSpeed, 60, 255, 600,  1200);   // ~35% stroke
+  int TH_HARD = map(baseSpeed, 60, 255, 1100, 2200);   // ~65% stroke
+  TH_SOFT = constrain(TH_SOFT, 500,  1400);
+  TH_HARD = constrain(TH_HARD, 900,  2400);
 
-  // Ngưỡng đảo chiều. Giảm xuống để ông nhìn thấy bánh trong lùi rõ hơn.
-  // Nếu xe rung quá thì tăng lên 1000–1400.
-  const int REVERSE_ERR_TH = 1600;
+  int absErr = abs(err);
+  int lPWM, rPWM;
 
-  if (abs(err) >= REVERSE_ERR_TH) {
-    // CUA GẮT: cưỡng bức 1 bánh tiến, 1 bánh lùi.
-    // Không phụ thuộc nhiều vào Kp nữa, nên chắc chắn sẽ thấy đảo chiều.
-    int mag = constrain(abs(err), REVERSE_ERR_TH, 3000);
+  if (absErr < TH_SOFT) {
+    // ── Vùng 1: PID thuần, không đảo chiều ───────
+    if (wasReversing) {
+      integralErr *= 0.25f;   // partial reset khi vừa ra khỏi cua gắt
+      wasReversing = false;
+    }
 
-    int outerPWM = map(mag, REVERSE_ERR_TH, 3000, baseSpeed + 20, maxSpeed);
-    int innerPWM = map(mag, REVERSE_ERR_TH, 3000, 90, maxSpeed);
+    corr   = constrain(corr, -(float)maxSpeed, (float)maxSpeed);
+    lPWM   = constrain(baseSpeed + (int)corr, 0, maxSpeed);
+    rPWM   = constrain(baseSpeed - (int)corr, 0, maxSpeed);
 
-    outerPWM = constrain(outerPWM, 0, maxSpeed);
-    innerPWM = constrain(innerPWM, 80, maxSpeed);
+  } else if (absErr < TH_HARD) {
+    // ── Vùng 2: cua vừa – PID mạnh, giảm tốc nhẹ ─
+    // Tốc độ giảm tuyến tính khi err tăng (braking phase nhẹ)
+    int reducedBase = map(absErr, TH_SOFT, TH_HARD, baseSpeed, baseSpeed * 65 / 100);
+    reducedBase = constrain(reducedBase, 60, maxSpeed);
+
+    corr = constrain(corr, -(float)maxSpeed, (float)maxSpeed);
+    lPWM = constrain(reducedBase + (int)corr, 0, maxSpeed);
+    rPWM = constrain(reducedBase - (int)corr, 0, maxSpeed);
+
+    wasReversing = false;
+
+  } else {
+    // ── Vùng 3: cua gắt 90° – đảo chiều + braking ─
+    wasReversing = true;
+
+    // Bánh ngoài: giảm tốc khi vào sâu hơn (không lao vào cua)
+    int outerPWM = map(absErr, TH_HARD, 3500, baseSpeed * 80 / 100, maxSpeed * 85 / 100);
+    outerPWM = constrain(outerPWM, 70, maxSpeed);
+
+    // Bánh trong: lùi tỷ lệ với mức độ cua
+    int innerPWM = map(absErr, TH_HARD, 3500, 60, maxSpeed * 70 / 100);
+    innerPWM = constrain(innerPWM, 55, maxSpeed);
 
     if (err > 0) {
-      // Line lệch sang phải -> quay phải: bánh trái tiến, bánh phải lùi
+      // Line lệch phải → quay phải: trái tiến, phải lùi
       lPWM =  outerPWM;
       rPWM = -innerPWM;
     } else {
-      // Line lệch sang trái -> quay trái: bánh trái lùi, bánh phải tiến
+      // Line lệch trái  → quay trái: trái lùi, phải tiến
       lPWM = -innerPWM;
       rPWM =  outerPWM;
     }
-  } else {
-    // LỆCH NHẸ: PID bình thường, không đảo chiều để đỡ giật trên đường thẳng.
-    corr = constrain(corr, -(float)maxSpeed, (float)maxSpeed);
-    lPWM = constrain(baseSpeed + (int)corr, 0, maxSpeed);
-    rPWM = constrain(baseSpeed - (int)corr, 0, maxSpeed);
   }
 
   setMotors(lPWM, rPWM);
 }
-
 // =====================================================
 // Setup
 // =====================================================
@@ -990,6 +1077,19 @@ void begin() {
   Serial.printf("[SENSOR] centerPos=%d\n", centerPos);
   stopMotors();
   readAllRaw();
+
+  // Load params từ NVS (giữ lại giá trị đã chỉnh qua BLE)
+  prefs.begin("linebot", true);   // read-only
+  Kp          = prefs.getFloat("kp",     Kp);
+  Ki          = prefs.getFloat("ki",     Ki);
+  Kd          = prefs.getFloat("kd",     Kd);
+  baseSpeed   = prefs.getInt  ("base",   baseSpeed);
+  maxSpeed    = prefs.getInt  ("max",    maxSpeed);
+  searchSpeed = prefs.getInt  ("srch",   searchSpeed);
+  lineDetTh   = prefs.getInt  ("lineth", lineDetTh);
+  prefs.end();
+  Serial.printf("[NVS] Loaded: Kp=%.3f Ki=%.4f Kd=%.3f base=%d max=%d srch=%d lineTh=%d\n",
+    Kp, Ki, Kd, baseSpeed, maxSpeed, searchSpeed, lineDetTh);
 
   // BLE
   setupBLE();
