@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LineBot Dashboard</title>
+<style>
+  :root {
+    --bg:       #0d1117;
+    --surface:  #161b22;
+    --border:   #30363d;
+    --accent:   #58a6ff;
+    --green:    #3fb950;
+    --red:      #f85149;
+    --yellow:   #d29922;
+    --text:     #c9d1d9;
+    --muted:    #8b949e;
+    --radius:   10px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, monospace;
+    min-height: 100vh;
+    padding: 12px;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 12px;
+  }
+
+  header h1 { font-size: 1.2rem; color: var(--accent); letter-spacing: 2px; }
+
+  #ble-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+
+  .dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--muted);
+    transition: background 0.3s;
+  }
+  .dot.connected { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .dot.error     { background: var(--red); }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px;
+  }
+
+  .card h2 {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--muted);
+    margin-bottom: 12px;
+  }
+
+  /* ── Sensor bars ───────────────────────────── */
+  #sensor-row {
+    display: flex;
+    gap: 6px;
+    align-items: flex-end;
+    height: 60px;
+    margin-bottom: 10px;
+  }
+
+  .sbar {
+    flex: 1;
+    border-radius: 4px 4px 0 0;
+    transition: background 0.15s, height 0.15s;
+    height: 30px;
+    background: var(--border);
+  }
+  .sbar.black { background: #f0f0f0; height: 55px; }
+  .sbar.white { background: #333;    height: 20px; }
+
+  #sensor-labels {
+    display: flex;
+    gap: 6px;
+    font-size: 0.65rem;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  #sensor-labels span { flex: 1; text-align: center; }
+
+  /* Position indicator */
+  #pos-track {
+    position: relative;
+    height: 20px;
+    background: var(--border);
+    border-radius: 10px;
+    margin-bottom: 4px;
+    overflow: hidden;
+  }
+  #pos-needle {
+    position: absolute;
+    top: 2px; bottom: 2px;
+    width: 12px;
+    background: var(--accent);
+    border-radius: 6px;
+    transform: translateX(-50%);
+    left: 50%;
+    transition: left 0.1s;
+  }
+  #pos-track::after {
+    content: '';
+    position: absolute;
+    left: 50%; top: 0; bottom: 0;
+    width: 2px;
+    background: rgba(255,255,255,0.15);
+    transform: translateX(-50%);
+  }
+
+  /* ── Telemetry numbers ─────────────────────── */
+  .telem-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+
+  .tval {
+    text-align: center;
+    background: var(--bg);
+    border-radius: 6px;
+    padding: 8px 4px;
+  }
+  .tval .num {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+  .tval .lbl { font-size: 0.65rem; color: var(--muted); margin-top: 2px; }
+
+  #state-badge {
+    display: inline-block;
+    padding: 2px 12px;
+    border-radius: 20px;
+    font-weight: 700;
+    font-size: 1rem;
+    background: var(--muted);
+    color: #000;
+    transition: background 0.3s;
+  }
+  #state-badge.RUN  { background: var(--green); }
+  #state-badge.STOP { background: var(--red); }
+  #state-badge.CAL  { background: var(--yellow); }
+
+  /* ── Control buttons ───────────────────────── */
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  button {
+    padding: 8px 18px;
+    border: none;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.2s, transform 0.1s;
+    letter-spacing: 0.5px;
+  }
+  button:active { transform: scale(0.97); }
+  button:disabled { opacity: 0.35; cursor: default; }
+
+  .btn-connect  { background: var(--accent); color: #000; }
+  .btn-disconnect { background: var(--border); color: var(--text); }
+  .btn-run      { background: var(--green); color: #000; }
+  .btn-stop     { background: var(--red);   color: #fff; }
+  .btn-cal      { background: var(--yellow); color: #000; }
+  .btn-apply    { background: var(--accent); color: #000; flex: 1; }
+  .btn-refresh  { background: var(--border); color: var(--text); }
+
+  /* ── Param sliders ─────────────────────────── */
+  .param {
+    display: grid;
+    grid-template-columns: 90px 1fr 70px;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .param label { font-size: 0.8rem; color: var(--muted); }
+
+  input[type=range] {
+    -webkit-appearance: none;
+    width: 100%;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    outline: none;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+  }
+
+  input[type=number] {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    padding: 3px 6px;
+    font-size: 0.85rem;
+    text-align: right;
+  }
+
+  /* ── Graph canvas ──────────────────────────── */
+  canvas {
+    width: 100%;
+    height: 100px;
+    border-radius: 6px;
+    background: var(--bg);
+    display: block;
+  }
+
+  /* ── Notice bar ────────────────────────────── */
+  #notice {
+    font-size: 0.75rem;
+    color: var(--yellow);
+    background: rgba(210,153,34,0.1);
+    border: 1px solid var(--yellow);
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin-bottom: 10px;
+  }
+
+  /* span width helper */
+  .full { grid-column: 1 / -1; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>⚡ LINEBOT</h1>
+  <div id="ble-status">
+    <div class="dot" id="dot"></div>
+    <span id="status-txt">Chưa kết nối</span>
+  </div>
+</header>
+
+<div id="notice">
+  ⚠ Web Bluetooth chỉ hoạt động trên <b>Chrome/Edge</b>.
+  Mở file này qua <b>localhost</b>:
+  <code>python -m http.server 8080</code>
+  rồi vào <b>http://localhost:8080</b>
+</div>
+
+<div style="margin-bottom:10px">
+  <div class="btn-row">
+    <button class="btn-connect"    id="btn-conn"    onclick="connect()">🔗 Kết nối BLE</button>
+    <button class="btn-disconnect" id="btn-disc"    onclick="disconnect()" disabled>✕ Ngắt</button>
+    <button class="btn-run"        id="btn-run"     onclick="sendCmd('RUN')"  disabled>▶ RUN</button>
+    <button class="btn-stop"       id="btn-stop"    onclick="sendCmd('STOP')" disabled>■ STOP</button>
+    <button class="btn-cal"        id="btn-cal"     onclick="sendCmd('CAL')"  disabled>⚙ CALIB</button>
+  </div>
+</div>
+
+<div class="grid">
+
+  <!-- ── Cảm biến ───────────────────────────── -->
+  <div class="card">
+    <h2>Cảm biến IR (0–7)</h2>
+    <div id="sensor-row">
+      <div class="sbar" id="s0"></div>
+      <div class="sbar" id="s1"></div>
+      <div class="sbar" id="s2"></div>
+      <div class="sbar" id="s3"></div>
+      <div class="sbar" id="s4"></div>
+      <div class="sbar" id="s5"></div>
+      <div class="sbar" id="s6"></div>
+      <div class="sbar" id="s7"></div>
+    </div>
+    <div id="sensor-labels">
+      <span>0</span><span>1</span><span>2</span><span>3</span>
+      <span>4</span><span>5</span><span>6</span><span>7</span>
+    </div>
+    <div id="pos-track"><div id="pos-needle"></div></div>
+    <div style="display:flex;justify-content:space-between;font-size:0.65rem;color:var(--muted)">
+      <span>Trái</span><span>↔ Vị trí line</span><span>Phải</span>
+    </div>
+  </div>
+
+  <!-- ── Telemetry ───────────────────────────── -->
+  <div class="card">
+    <h2>Telemetry</h2>
+    <div style="text-align:center;margin-bottom:12px">
+      <span id="state-badge">---</span>
+      &nbsp;&nbsp;
+      <span style="font-size:0.8rem;color:var(--muted)">FOUND: </span>
+      <span id="t-found" style="font-size:0.9rem">—</span>
+    </div>
+    <div class="telem-grid">
+      <div class="tval"><div class="num" id="t-pos">—</div><div class="lbl">POSITION</div></div>
+      <div class="tval"><div class="num" id="t-err">—</div><div class="lbl">ERROR</div></div>
+      <div class="tval">
+        <div class="num" id="t-lpwm" style="color:var(--green)">—</div>
+        <div class="lbl">L PWM</div>
+      </div>
+      <div class="tval">
+        <div class="num" id="t-rpwm" style="color:var(--yellow)">—</div>
+        <div class="lbl">R PWM</div>
+      </div>
+      <div class="tval"><div class="num" id="t-hz" style="color:var(--muted)">—</div><div class="lbl">Hz</div></div>
+      <div class="tval"><div class="num" id="t-pkt" style="color:var(--muted)">0</div><div class="lbl">PKT</div></div>
+    </div>
+  </div>
+
+  <!-- ── PID params ──────────────────────────── -->
+  <div class="card">
+    <h2>PID &amp; Tốc độ</h2>
+
+    <div class="param">
+      <label>Kp</label>
+      <input type="range" id="sl-kp" min="0" max="0.5" step="0.001" value="0.05"
+             oninput="syncNum('kp')">
+      <input type="number" id="kp" min="0" max="2" step="0.001" value="0.050"
+             oninput="syncSlider('kp')">
+    </div>
+    <div class="param">
+      <label>Kd</label>
+      <input type="range" id="sl-kd" min="0" max="3" step="0.005" value="0.22"
+             oninput="syncNum('kd')">
+      <input type="number" id="kd" min="0" max="5" step="0.001" value="0.220"
+             oninput="syncSlider('kd')">
+    </div>
+    <div class="param">
+      <label>Base speed</label>
+      <input type="range" id="sl-base" min="0" max="255" step="1" value="150"
+             oninput="syncNum('base')">
+      <input type="number" id="base" min="0" max="255" step="1" value="150"
+             oninput="syncSlider('base')">
+    </div>
+    <div class="param">
+      <label>Max speed</label>
+      <input type="range" id="sl-max" min="0" max="255" step="1" value="255"
+             oninput="syncNum('max')">
+      <input type="number" id="max" min="0" max="255" step="1" value="255"
+             oninput="syncSlider('max')">
+    </div>
+    <div class="param">
+      <label>Search speed</label>
+      <input type="range" id="sl-srch" min="0" max="200" step="1" value="110"
+             oninput="syncNum('srch')">
+      <input type="number" id="srch" min="0" max="255" step="1" value="110"
+             oninput="syncSlider('srch')">
+    </div>
+    <div class="param">
+      <label>Line Threshold</label>
+      <input type="range" id="sl-lineth" min="50" max="3000" step="10" value="900"
+             oninput="syncNum('lineth')">
+      <input type="number" id="lineth" min="50" max="8000" step="10" value="900"
+             oninput="syncSlider('lineth')">
+    </div>
+
+    <div class="btn-row" style="margin-top:6px">
+      <button class="btn-apply"   id="btn-apply"   onclick="sendConfig()" disabled>
+        ✓ Áp dụng xuống xe
+      </button>
+      <button class="btn-refresh" id="btn-refresh" onclick="readConfig()" disabled>
+        ↻ Đọc từ xe
+      </button>
+    </div>
+  </div>
+
+  <!-- ── Error graph ──────────────────────────── -->
+  <div class="card">
+    <h2>Đồ thị Error / Position</h2>
+    <canvas id="graph" width="400" height="100"></canvas>
+    <div style="display:flex;gap:16px;margin-top:8px;font-size:0.7rem;color:var(--muted)">
+      <span><span style="color:var(--red)">██</span> Error</span>
+      <span><span style="color:var(--accent)">██</span> Position (±3500)</span>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ════════════════════════════════════════════════════
+// BLE UUIDs – phải khớp với firmware
+// ════════════════════════════════════════════════════
+const SVC_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
+const TEL_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
+const CFG_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a9';
+const CMD_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26aa';
+
+let device, server, telChar, cfgChar, cmdChar;
+let pktCount = 0;
+let lastPktTime = Date.now();
+let hzBuf = [];
+
+// ════════════════════════════════════════════════════
+// Kết nối BLE
+// ════════════════════════════════════════════════════
+async function connect() {
+  if (!navigator.bluetooth) {
+    alert('Trình duyệt không hỗ trợ Web Bluetooth!\nDùng Chrome hoặc Edge và mở qua localhost.');
+    return;
+  }
+  setStatus('connecting', 'Đang tìm thiết bị...');
+  try {
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ name: 'LineBot' }],
+      optionalServices: [SVC_UUID]
+    });
+
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+    setStatus('connecting', 'Đang kết nối...');
+
+    server   = await device.gatt.connect();
+    const svc = await server.getPrimaryService(SVC_UUID);
+
+    telChar = await svc.getCharacteristic(TEL_UUID);
+    cfgChar = await svc.getCharacteristic(CFG_UUID);
+    cmdChar = await svc.getCharacteristic(CMD_UUID);
+
+    await telChar.startNotifications();
+    telChar.addEventListener('characteristicvaluechanged', onTelemetry);
+
+    setStatus('connected', 'Đã kết nối: ' + device.name);
+    setConnectedUI(true);
+    await readConfig();  // đọc params hiện tại từ xe
+
+  } catch (e) {
+    console.error(e);
+    setStatus('error', 'Lỗi: ' + e.message);
+    setConnectedUI(false);
+  }
+}
+
+async function disconnect() {
+  if (device && device.gatt.connected) device.gatt.disconnect();
+}
+
+function onDisconnected() {
+  setStatus('', 'Đã ngắt kết nối');
+  setConnectedUI(false);
+}
+
+function setConnectedUI(on) {
+  document.getElementById('btn-conn').disabled   =  on;
+  document.getElementById('btn-disc').disabled   = !on;
+  document.getElementById('btn-run').disabled    = !on;
+  document.getElementById('btn-stop').disabled   = !on;
+  document.getElementById('btn-cal').disabled    = !on;
+  document.getElementById('btn-apply').disabled  = !on;
+  document.getElementById('btn-refresh').disabled= !on;
+}
+
+function setStatus(cls, txt) {
+  const dot = document.getElementById('dot');
+  dot.className = 'dot ' + cls;
+  document.getElementById('status-txt').textContent = txt;
+}
+
+// ════════════════════════════════════════════════════
+// Nhận telemetry
+// ════════════════════════════════════════════════════
+function onTelemetry(evt) {
+  const txt = new TextDecoder().decode(evt.target.value);
+  parseTelemetry(txt);
+
+  // Hz calc
+  pktCount++;
+  const now = Date.now();
+  hzBuf.push(now);
+  hzBuf = hzBuf.filter(t => now - t < 1000);
+  document.getElementById('t-hz').textContent  = hzBuf.length;
+  document.getElementById('t-pkt').textContent = pktCount;
+}
+
+function parseTelemetry(txt) {
+  // Định dạng: S:RUN|P:3456|E:-44|L:160|R:130|F:1|BW:01111100
+  const p = {};
+  txt.split('|').forEach(tok => {
+    const i = tok.indexOf(':');
+    if (i > 0) p[tok.slice(0, i)] = tok.slice(i + 1);
+  });
+
+  // State badge
+  const st = p.S || 'STOP';
+  const badge = document.getElementById('state-badge');
+  badge.textContent = st;
+  badge.className   = '';
+  badge.classList.add(st);
+
+  // Numbers
+  setText('t-pos',   p.P);
+  setText('t-err',   p.E);
+  setText('t-lpwm',  p.L);
+  setText('t-rpwm',  p.R);
+  document.getElementById('t-found').textContent = p.F === '1' ? '✓ Yes' : '✗ No';
+
+  // Sensor bars
+  const bw = p.BW || '00000000';
+  for (let i = 0; i < 8; i++) {
+    const bar = document.getElementById('s' + i);
+    bar.className = 'sbar ' + (bw[i] === '1' ? 'black' : 'white');
+  }
+
+  // Position needle (0–7000 → 0–100%)
+  const pos = parseInt(p.P) || 3500;
+  const pct = Math.max(0, Math.min(100, pos / 70));
+  document.getElementById('pos-needle').style.left = pct + '%';
+
+  // Graph
+  updateGraph(parseInt(p.E) || 0, pos);
+}
+
+function setText(id, v) {
+  document.getElementById(id).textContent = (v !== undefined) ? v : '—';
+}
+
+// ════════════════════════════════════════════════════
+// Gửi lệnh (RUN / STOP / CAL)
+// ════════════════════════════════════════════════════
+async function sendCmd(cmd) {
+  if (!cmdChar) return;
+  try {
+    await cmdChar.writeValue(new TextEncoder().encode(cmd));
+    console.log('[CMD]', cmd);
+  } catch (e) { console.error('sendCmd:', e); }
+}
+
+// ════════════════════════════════════════════════════
+// Đọc params từ xe
+// ════════════════════════════════════════════════════
+async function readConfig() {
+  if (!cfgChar) return;
+  try {
+    const val = await cfgChar.readValue();
+    const txt = new TextDecoder().decode(val);
+    // Định dạng: KP:0.050|KD:0.220|BASE:150|MAX:255|SRCH:110|LINETH:900
+    const p = {};
+    txt.split('|').forEach(tok => {
+      const i = tok.indexOf(':');
+      if (i > 0) p[tok.slice(0, i)] = tok.slice(i + 1);
+    });
+    setParamUI('kp',     p.KP,     3);
+    setParamUI('kd',     p.KD,     3);
+    setParamUI('base',   p.BASE,   0);
+    setParamUI('max',    p.MAX,    0);
+    setParamUI('srch',   p.SRCH,   0);
+    setParamUI('lineth', p.LINETH, 0);
+    console.log('[CFG read]', txt);
+  } catch (e) { console.error('readConfig:', e); }
+}
+
+function setParamUI(id, val, dec) {
+  if (val === undefined) return;
+  const v = parseFloat(val);
+  const numEl = document.getElementById(id);
+  const slEl  = document.getElementById('sl-' + id);
+  if (!numEl || !slEl) return;
+  numEl.value = dec > 0 ? v.toFixed(dec) : Math.round(v);
+  slEl.value  = v;
+}
+
+// ════════════════════════════════════════════════════
+// Gửi params xuống xe
+// ════════════════════════════════════════════════════
+async function sendConfig() {
+  if (!cfgChar) return;
+  const cfg = [
+    'KP:'    + parseFloat(document.getElementById('kp').value).toFixed(3),
+    'KD:'    + parseFloat(document.getElementById('kd').value).toFixed(3),
+    'BASE:'  + parseInt(document.getElementById('base').value),
+    'MAX:'   + parseInt(document.getElementById('max').value),
+    'SRCH:'  + parseInt(document.getElementById('srch').value),
+    'LINETH:'+ parseInt(document.getElementById('lineth').value),
+  ].join('|');
+
+  try {
+    await cfgChar.writeValue(new TextEncoder().encode(cfg));
+    console.log('[CFG sent]', cfg);
+    // Flash button để xác nhận
+    const btn = document.getElementById('btn-apply');
+    const orig = btn.textContent;
+    btn.textContent = '✓ Đã gửi!';
+    btn.style.background = '#3fb950';
+    setTimeout(() => { btn.textContent = orig; btn.style.background = ''; }, 1000);
+  } catch (e) { console.error('sendConfig:', e); }
+}
+
+// ════════════════════════════════════════════════════
+// Đồng bộ slider ↔ input[number]
+// ════════════════════════════════════════════════════
+function syncNum(id) {
+  const sl  = document.getElementById('sl-' + id);
+  const num = document.getElementById(id);
+  const dec = ['kp','kd'].includes(id) ? 3 : 0;
+  num.value = dec ? parseFloat(sl.value).toFixed(dec) : sl.value;
+}
+
+function syncSlider(id) {
+  const sl  = document.getElementById('sl-' + id);
+  const num = document.getElementById(id);
+  sl.value  = parseFloat(num.value);
+}
+
+// ════════════════════════════════════════════════════
+// Đồ thị Error + Position
+// ════════════════════════════════════════════════════
+const canvas = document.getElementById('graph');
+const ctx    = canvas.getContext('2d');
+const errBuf = new Array(200).fill(0);
+const posBuf = new Array(200).fill(3500);
+
+function updateGraph(err, pos) {
+  errBuf.shift(); errBuf.push(err);
+  posBuf.shift(); posBuf.push(pos);
+  drawGraph();
+}
+
+function drawGraph() {
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  // Nền
+  ctx.fillStyle = '#0d1117';
+  ctx.fillRect(0, 0, W, H);
+
+  // Lưới
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.lineWidth = 1;
+  for (let y = H/4; y < H; y += H/4) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+
+  // Đường zero
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+  ctx.beginPath(); ctx.moveTo(0, H/2); ctx.lineTo(W, H/2); ctx.stroke();
+
+  const n = errBuf.length;
+
+  // ── Error curve (đỏ, scale ±3500 → ±H/2) ──
+  ctx.strokeStyle = '#f85149';
+  ctx.lineWidth   = 1.5;
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = i * W / n;
+    const y = H/2 - (errBuf[i] / 3500) * (H/2 - 4);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // ── Position curve (xanh, 0–7000 → H–0) ──
+  ctx.strokeStyle = '#58a6ff';
+  ctx.lineWidth   = 1.5;
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = i * W / n;
+    const y = H - (posBuf[i] / 7000) * H;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+// Resize canvas theo DOM
+function resizeCanvas() {
+  const rect = canvas.getBoundingClientRect();
+  canvas.width  = rect.width  * devicePixelRatio;
+  canvas.height = rect.height * devicePixelRatio;
+  ctx.scale(devicePixelRatio, devicePixelRatio);
+  drawGraph();
+}
+
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+drawGraph();
+</script>
+</body>
+</html>
