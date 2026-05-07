@@ -92,6 +92,7 @@ public:
     void motor_set_dir(int dir);    ///< 1 = tiến, -1 = lùi
     void motor_stop();              ///< Dừng (coast)
     void motor_run(int speed);      ///< speed âm/dương -255…+255
+    void runSigned(int speed);   // dương=tiến, âm=lùi, 0=brake
 
     // ── Encoder ───────────────────────────────
 

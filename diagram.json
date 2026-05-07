@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "author": "Anonymous maker",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "wokwi-breadboard", "id": "bb1", "top": 285, "left": 204.4, "attrs": {} },
+    {
+      "type": "board-esp32-devkit-c-v4",
+      "id": "esp",
+      "top": 286.34,
+      "left": 13.3,
+      "rotate": 90,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-lcd1602",
+      "id": "lcd1",
+      "top": 131.2,
+      "left": 207.2,
+      "attrs": { "pins": "i2c" }
+    },
+    { "type": "wokwi-ds1307", "id": "rtc1", "top": 186.6, "left": 528.1, "attrs": {} },
+    {
+      "type": "wokwi-buzzer",
+      "id": "bz1",
+      "top": 338.4,
+      "left": 414.6,
+      "attrs": { "volume": "0.1" }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn1",
+      "top": 364.2,
+      "left": 550.2,
+      "rotate": 90,
+      "attrs": { "color": "green", "xray": "1" }
+    }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "esp:GND.2", "bb1:bn.1", "black", [ "v0" ] ],
+    [ "esp:5V", "lcd1:VCC", "red", [ "v-47.85", "h211.2", "v-124.9" ] ],
+    [ "esp:5V", "bb1:tp.1", "red", [ "v0" ] ],
+    [ "lcd1:GND", "bb1:bn.1", "black", [ "h-19.2", "v316.8" ] ],
+    [ "esp:21", "lcd1:SDA", "green", [ "v48", "h-153.6", "v-307.2", "h268.8" ] ],
+    [ "esp:22", "lcd1:SCL", "green", [ "v28.8", "h-19.2" ] ],
+    [ "rtc1:GND", "bb1:bn.39", "black", [ "h0", "v-28.8", "h144" ] ],
+    [ "rtc1:5V", "bb1:tp.25", "red", [ "h-19.2", "v-0.4" ] ],
+    [ "esp:21", "rtc1:SDA", "green", [ "v38.4", "h-153.6", "v-355.2", "h604.8", "v96" ] ],
+    [ "esp:22", "rtc1:SCL", "green", [ "v48", "h278.4", "v-220.8", "h124.8", "v-38.4" ] ],
+    [ "btn1:2.l", "bb1:bn.27", "black", [ "v-28.8", "h-38.6" ] ],
+    [ "bb1:24b.i", "esp:4", "green", [ "v28.8", "h-422.4" ] ],
+    [ "bb1:23b.i", "bb1:bn.18", "black", [ "v0" ] ],
+    [ "bz1:1", "bb1:23b.h", "", [ "$bb" ] ],
+    [ "bz1:2", "bb1:24b.h", "", [ "$bb" ] ],
+    [ "btn1:1.l", "bb1:39t.c", "", [ "$bb" ] ],
+    [ "btn1:2.l", "bb1:37t.c", "", [ "$bb" ] ],
+    [ "btn1:1.r", "bb1:39b.h", "", [ "$bb" ] ],
+    [ "btn1:2.r", "bb1:37b.h", "", [ "$bb" ] ],
+    [ "btn1:2.r", "esp:2", "green", [ "v38.6", "h-0.2" ] ]
+  ],
+  "dependencies": {}
+}

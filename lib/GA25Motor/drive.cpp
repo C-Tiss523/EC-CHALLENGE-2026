@@ -36,6 +36,21 @@ void Drive::motor_set_dir(int dir) { _motor.motor_set_dir(dir); }
 void Drive::motor_stop() { _motor.motor_stop(); }
 void Drive::motor_run(int speed) { _motor.motor_run(speed); }
 
+// Chạy có dấu: dương=tiến, âm=lùi, 0=brake
+// Dùng hàm này thay motor_run() khi cần đảo chiều
+void Drive::runSigned(int speed) {
+  speed = constrain(speed, -255, 255);
+  if (speed > 0) {
+    _motor.motor_set_dir(1);
+    _motor.motor_set_pwm(speed);
+  } else if (speed < 0) {
+    _motor.motor_set_dir(-1);
+    _motor.motor_set_pwm(-speed);
+  } else {
+    _motor.motor_stop();   // brake cứng, không coast
+  }
+}
+
 // ─────────────────────────────────────────────
 //  Encoder
 // ─────────────────────────────────────────────

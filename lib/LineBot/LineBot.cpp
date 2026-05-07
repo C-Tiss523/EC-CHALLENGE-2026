@@ -113,8 +113,8 @@ const bool SENSOR_ENABLED[NUM_SENSORS] = { false, true, true, true, true, true, 
 #define ENBR 35
 
 // Kênh LEDC – mỗi Drive dùng 1 kênh
-#define CH_A 0
-#define CH_B 1
+#define CH_A 8
+#define CH_B 9
 
 // Đối tượng Drive cho motor trái (A) và phải (B)
 Drive motorL;
@@ -416,18 +416,30 @@ void readAllRaw() {
 // =====================================================
 // driveMotor() không còn cần thiết – Drive::motor_run() xử lý nội bộ
 
+// MIN_PWM: ngưỡng chết – dưới mức này motor không quay được.
+// Chỉnh theo motor thực tế (GA25 thường 45–65).
+#define MIN_PWM 55
+
 void setMotors(int l, int r) {
   l = constrain(l, -255, 255);
   r = constrain(r, -255, 255);
-  motorL.motor_run(l);
-  motorR.motor_run(r);
-  lastLPWM = l;  lastRPWM = r;
+
+  // Deadband: nếu lệnh nhỏ hơn ngưỡng chết thì ép lên MIN_PWM
+  // để bánh không bị "cấp điện mà không quay" gây giật.
+  if (l != 0 && abs(l) < MIN_PWM) l = (l > 0) ? MIN_PWM : -MIN_PWM;
+  if (r != 0 && abs(r) < MIN_PWM) r = (r > 0) ? MIN_PWM : -MIN_PWM;
+
+  motorL.runSigned(l);   // ← dùng runSigned thay motor_run
+  motorR.runSigned(r);
+  lastLPWM = l;
+  lastRPWM = r;
 }
 
 void stopMotors() {
-  motorL.motor_stop();
-  motorR.motor_stop();
-  lastLPWM = 0;  lastRPWM = 0;
+  motorL.runSigned(0);   // brake cứng
+  motorR.runSigned(0);
+  lastLPWM = 0;
+  lastRPWM = 0;
 }
 
 // =====================================================
@@ -918,128 +930,412 @@ void handleInputs() {
 // (ngay sau   bool  lastFound = false;  )
 // =====================================================
 int   lostLineDir   = 0;        // +1=mất về phải, -1=mất về trái
-bool  wasReversing  = false;    // đang ở chế độ cua gắt?
+//bool  wasReversing  = false;    // đang ở chế độ cua gắt?
 float filtDErr      = 0.0f;     // derivative đã lọc IIR
 unsigned long lostLineTime = 0; // thời điểm mất line
 
 // =====================================================
 // Line following – SỬA TOÀN BỘ
 // =====================================================
+// Biến ngoài hàm (khai báo cùng chỗ lastFound):
+// int   lostLineDir   = 0;
+// float filtDErr      = 0.0f;
+// unsigned long lostLineTime = 0;
+
+// =====================================================
+// Biến trạng thái – thay thế khai báo cũ
+// =====================================================
+
+
+// ── COAST phase ──────────────────────────────────────
+// Khi mất line, giữ nguyên steering cũ thêm COAST_MS
+// để vượt qua nét đứt mà không cần xoay tìm.
+// Tăng COAST_MS nếu nét đứt dài hơn, giảm nếu robot vọt khỏi line.
+#define COAST_MS 20UL
+
+int coastL = 0;   // PWM bánh trái lúc vừa mất line
+int coastR = 0;   // PWM bánh phải lúc vừa mất line
+
+
+// =====================================================
+// runLineFollower() – có xử lý nét đứt
+// =====================================================
 void runLineFollower() {
 
-  // ── Đọc vị trí line ─────────────────────────────
+  // ── 1. Đọc vị trí line ──────────────────────────
   int  pos   = centerPos;
   bool found = getLinePos(pos);
 
-  // ── Ghi nhớ hướng ngay khi vừa mất line ─────────
+  // ── 2. Ghi nhớ thời điểm + steering khi vừa mất ─
   if (lastFound && !found) {
     lostLineDir  = (lastErr >= 0) ? 1 : -1;
     lostLineTime = millis();
+    coastL       = lastLPWM;   // giữ lại PWM lúc vừa thấy line lần cuối
+    coastR       = lastRPWM;
   }
-
   lastFound = found;
   lastPos   = pos;
 
-  // ── Mất line: xoay đúng chiều + timeout 3s ──────
+  // ── 3. Mất line: COAST → SEARCH → STOP ──────────
   if (!found) {
+    unsigned long lost = millis() - lostLineTime;
 
-    // Dừng hẳn nếu mất line quá 3 giây
-    if (millis() - lostLineTime > 3000) {
+    // STOP: mất line quá lâu
+    if (lost > 3000) {
       stopMotors();
       robotState = ST_STOP;
       Serial.println("[ERR] Mat line >3s, tu dong dung.");
       return;
     }
 
-    // Tốc độ tìm line tỷ lệ với thời gian đã mất (bắt đầu nhẹ, tăng dần)
-    unsigned long elapsed = millis() - lostLineTime;
-    int spinPWM = map((int)elapsed, 0, 1500, searchSpeed, min(searchSpeed + 60, maxSpeed));
-    spinPWM = constrain(spinPWM, searchSpeed, maxSpeed);
+    // COAST: tiếp tục đi thẳng với steering cũ
+    // → robot tự nhiên vượt qua khe nét đứt ngắn
+    if (lost < COAST_MS) {
+      // Giảm nhẹ tốc độ để tránh vọt nếu thực sự mất line
+      int cl = coastL > 0 ? max(coastL - 20, 40) : min(coastL + 20, -40);
+      int cr = coastR > 0 ? max(coastR - 20, 40) : min(coastR + 20, -40);
+      setMotors(cl, cr);
+      return;
+    }
 
-    if (lostLineDir > 0) setMotors( spinPWM, -spinPWM);   // quay phải
-    else                 setMotors(-spinPWM,  spinPWM);   // quay trái
+    // SEARCH: xoay tìm line (tăng tốc dần theo thời gian)
+    int spinPWM = (int)map((long)lost, (long)COAST_MS, 1500,
+                           searchSpeed, min(searchSpeed + 60, maxSpeed));
+    spinPWM = constrain(spinPWM, searchSpeed, maxSpeed);
+    if (lostLineDir > 0) setMotors( spinPWM, -spinPWM);
+    else                 setMotors(-spinPWM,  spinPWM);
     return;
   }
 
-  // ── Tính sai số ──────────────────────────────────
-  int   err  = pos - centerPos;
-  int   dErr = err - lastErr;
-  lastErr    = err;
+  // ── 4. Thấy line: PID bình thường ────────────────
+  int err  = pos - centerPos;
+  int dErr = err - lastErr;
+  lastErr  = err;
 
-  // ── Derivative lọc IIR (giảm giật khi đột ngột) ──
-  filtDErr = filtDErr * 0.55f + (float)dErr * 0.45f;
+  filtDErr = filtDErr * 0.75f + (float)dErr * 0.25f;
 
-  // ── Integral với anti-windup ──────────────────────
-  integralErr += err;
-  integralErr  = constrain(integralErr, -5000.0f, 5000.0f);
+  integralErr += (float)err;
+  integralErr  = constrain(integralErr, -2000.0f, 2000.0f);
 
-  float corr = Kp * (float)err + Ki * integralErr + Kd * filtDErr;
+  float corr = Kp * (float)err
+             + Ki * integralErr
+             + Kd * filtDErr;
 
-  // ─────────────────────────────────────────────────
-  // 3 VÙNG ĐIỀU KHIỂN
-  //
-  //  Vùng 1  |err| < TH_SOFT   → PID bình thường
-  //  Vùng 2  TH_SOFT..TH_HARD  → PID mạnh + giảm tốc nhẹ, chưa đảo chiều
-  //  Vùng 3  |err| > TH_HARD   → Đảo chiều hoàn toàn + braking
-  //
-  // Ngưỡng động theo baseSpeed để không cần chỉnh lại khi đổi tốc độ
-  // ─────────────────────────────────────────────────
-  int TH_SOFT = map(baseSpeed, 60, 255, 600,  1200);   // ~35% stroke
-  int TH_HARD = map(baseSpeed, 60, 255, 1100, 2200);   // ~65% stroke
-  TH_SOFT = constrain(TH_SOFT, 500,  1400);
-  TH_HARD = constrain(TH_HARD, 900,  2400);
+  float errRatio   = constrain((float)abs(err) / 3500.0f, 0.0f, 1.0f);
+  float speedScale = 1.0f - errRatio * 0.70f;
+  int   dynBase    = max((int)((float)baseSpeed * speedScale), 0);
 
-  int absErr = abs(err);
-  int lPWM, rPWM;
-
-  if (absErr < TH_SOFT) {
-    // ── Vùng 1: PID thuần, không đảo chiều ───────
-    if (wasReversing) {
-      integralErr *= 0.25f;   // partial reset khi vừa ra khỏi cua gắt
-      wasReversing = false;
-    }
-
-    corr   = constrain(corr, -(float)maxSpeed, (float)maxSpeed);
-    lPWM   = constrain(baseSpeed + (int)corr, 0, maxSpeed);
-    rPWM   = constrain(baseSpeed - (int)corr, 0, maxSpeed);
-
-  } else if (absErr < TH_HARD) {
-    // ── Vùng 2: cua vừa – PID mạnh, giảm tốc nhẹ ─
-    // Tốc độ giảm tuyến tính khi err tăng (braking phase nhẹ)
-    int reducedBase = map(absErr, TH_SOFT, TH_HARD, baseSpeed, baseSpeed * 65 / 100);
-    reducedBase = constrain(reducedBase, 60, maxSpeed);
-
-    corr = constrain(corr, -(float)maxSpeed, (float)maxSpeed);
-    lPWM = constrain(reducedBase + (int)corr, 0, maxSpeed);
-    rPWM = constrain(reducedBase - (int)corr, 0, maxSpeed);
-
-    wasReversing = false;
-
-  } else {
-    // ── Vùng 3: cua gắt 90° – đảo chiều + braking ─
-    wasReversing = true;
-
-    // Bánh ngoài: giảm tốc khi vào sâu hơn (không lao vào cua)
-    int outerPWM = map(absErr, TH_HARD, 3500, baseSpeed * 80 / 100, maxSpeed * 85 / 100);
-    outerPWM = constrain(outerPWM, 70, maxSpeed);
-
-    // Bánh trong: lùi tỷ lệ với mức độ cua
-    int innerPWM = map(absErr, TH_HARD, 3500, 60, maxSpeed * 70 / 100);
-    innerPWM = constrain(innerPWM, 55, maxSpeed);
-
-    if (err > 0) {
-      // Line lệch phải → quay phải: trái tiến, phải lùi
-      lPWM =  outerPWM;
-      rPWM = -innerPWM;
-    } else {
-      // Line lệch trái  → quay trái: trái lùi, phải tiến
-      lPWM = -innerPWM;
-      rPWM =  outerPWM;
-    }
-  }
+  int lPWM = constrain(dynBase + (int)corr, -maxSpeed, maxSpeed);
+  int rPWM = constrain(dynBase - (int)corr, -maxSpeed, maxSpeed);
 
   setMotors(lPWM, rPWM);
 }
+// =====================================================
+// MISSION SEQUENCER – non-blocking
+// Ghép tự do: PID ↔ đi thẳng ↔ quay ↔ chờ
+// =====================================================
+
+// ── Hằng số cần hiệu chỉnh theo cơ khí thực tế ───
+// Đo bằng cách: chạy STRAIGHT_MM(1000), đo thước, chỉnh lại
+#define COUNTS_PER_MM   3.5f    // xung encoder / mm (hiệu chỉnh thực tế)
+// Đo bằng cách: chạy TURN_MS(+, 500), đo góc, nhân/chia lại ms cho 90°
+#define MS_PER_90DEG    420     // ms để quay 90° tại searchSpeed (hiệu chỉnh)
+
+// Tham số riêng cho đi cứng theo encoder
+#define HARD_MIN_PWM       70    // PWM tối thiểu để xe vẫn bò được khi gần đích
+#define HARD_CORR_MAX      35    // giới hạn bù lệch 2 bánh
+#define HARD_STRAIGHT_KP   0.80f // hệ số bù encoder khi đi thẳng
+#define HARD_BRAKE_MS      40    // thời gian brake sau khi đi cứng xong
+
+enum StepType : uint8_t {
+  MS_PID,          // dò line, param = thời gian tối đa ms (0 = đến khi mất line)
+  MS_STRAIGHT_MM,  // đi thẳng, param = mm (âm = lùi), speed = tốc độ (0 = baseSpeed)
+  MS_STRAIGHT_MS,  // đi thẳng theo thời gian, param = ms
+  MS_TURN_MS,      // quay tại chỗ: param = ms, speed > 0 = phải, speed < 0 = trái
+  MS_STOP_MS,      // dừng hẳn chờ param ms
+};
+
+struct MissionStep {
+  StepType type;
+  int      param;   // ý nghĩa tuỳ type (mm, ms, ...)
+  int      speed;   // tốc độ override; 0 = dùng baseSpeed / searchSpeed mặc định
+};
+
+#define MISSION_MAX 24
+static MissionStep _mission[MISSION_MAX];
+static int  _missionLen  = 0;
+static int  _missionIdx  = 0;
+bool        missionActive = false;  // extern nếu cần dùng ở main.cpp
+
+// Biến trạng thái của bước đang chạy
+static unsigned long _stepT0   = 0;
+static long          _encL0    = 0;
+static long          _encR0    = 0;
+
+// ── API xây mission ───────────────────────────────
+
+// Xoá mission hiện tại
+void missionClear() {
+  _missionLen  = 0;
+  _missionIdx  = 0;
+  missionActive = false;
+}
+
+// Thêm 1 bước vào cuối
+void missionAdd(StepType type, int param, int speed = 0) {
+  if (_missionLen >= MISSION_MAX) {
+    Serial.println("[MISSION] WARN: mission full, bo buoc nay.");
+    return;
+  }
+  _mission[_missionLen++] = { type, param, speed };
+}
+
+// Hàm tắt gọn cho từng loại bước
+void addPID       (int ms = 0)           { missionAdd(MS_PID,         ms,  0);     }
+void addStraight  (int mm, int spd = 0)  { missionAdd(MS_STRAIGHT_MM, mm,  spd);   }
+void addStraightMs(int ms, int spd = 0)  { missionAdd(MS_STRAIGHT_MS, ms,  spd);   }
+void addTurnRight (int ms, int spd = 0)  { missionAdd(MS_TURN_MS,     ms,  abs(spd ? spd : searchSpeed)); }
+void addTurnLeft  (int ms, int spd = 0)  { missionAdd(MS_TURN_MS,     ms, -abs(spd ? spd : searchSpeed)); }
+void addWait      (int ms)               { missionAdd(MS_STOP_MS,     ms,  0);     }
+
+// ── Khởi động bước mới ───────────────────────────
+static void _beginStep(int idx) {
+  _stepT0 = millis();
+  if (_mission[idx].type == MS_STRAIGHT_MM) {
+    _encL0 = motorL.encoder_get_count();
+    _encR0 = motorR.encoder_get_count();
+  }
+  if (_mission[idx].type == MS_PID) {
+    lastErr     = 0;
+    integralErr = 0.0f;
+    filtDErr    = 0.0f;
+    lastFound   = false;
+    lostLineTime = millis();
+  }
+  Serial.printf("[MISSION] Step %d/%d type=%d param=%d spd=%d\n",
+    idx+1, _missionLen,
+    (int)_mission[idx].type,
+    _mission[idx].param,
+    _mission[idx].speed);
+}
+
+// ── Bắt đầu chạy mission ─────────────────────────
+void missionStart() {
+  if (_missionLen == 0) { Serial.println("[MISSION] Empty."); return; }
+  if (!calibrated)      { Serial.println("[MISSION] Chua calib."); return; }
+  _missionIdx   = 0;
+  missionActive = true;
+  robotState    = ST_RUN;
+  _beginStep(0);
+  Serial.printf("[MISSION] Start (%d steps)\n", _missionLen);
+}
+
+// ── Gọi từ update() mỗi loop ─────────────────────
+void runMission() {
+  if (!missionActive) return;
+
+  if (_missionIdx >= _missionLen) {
+    missionActive = false;
+    robotState    = ST_STOP;
+    stopMotors();
+    Serial.println("[MISSION] Done.");
+    return;
+  }
+
+  MissionStep &s   = _mission[_missionIdx];
+  int          spd = (s.speed != 0) ? abs(s.speed) : baseSpeed;
+  bool         done = false;
+
+  switch (s.type) {
+
+    // ── PID: dò line ────────────────────────────
+    case MS_PID: {
+      runLineFollower();
+      // Kết thúc bước khi:
+      // a) param > 0 và hết thời gian, hoặc
+      // b) param = 0 và mất line (chuyển sang bước tiếp = hard move)
+      if (s.param > 0) {
+        done = (millis() - _stepT0 >= (unsigned long)s.param);
+      } else {
+        // param = 0: kết thúc khi mất line & đã coast xong
+        // (lostLineTime được set trong runLineFollower)
+        done = (!lastFound && (millis() - lostLineTime >= COAST_MS + 50));
+      }
+      break;
+    }
+
+    // ── STRAIGHT_MM: đi thẳng theo encoder ─────
+case MS_STRAIGHT_MM: {
+  long dL = abs(motorL.encoder_get_count() - _encL0);
+  long dR = abs(motorR.encoder_get_count() - _encR0);
+  long traveled = (dL + dR) / 2;
+  long target   = (long)(fabsf((float)s.param) * COUNTS_PER_MM);
+
+  int dir = (s.param >= 0) ? 1 : -1;
+
+  long diff = dL - dR;  // dL > dR nghĩa là bánh trái đi nhanh hơn
+  int corr = constrain((int)(diff * HARD_STRAIGHT_KP), -HARD_CORR_MAX, HARD_CORR_MAX);
+
+  int lCmd = dir * (spd - corr);
+  int rCmd = dir * (spd + corr);
+
+  setMotors(lCmd, rCmd);
+
+  done = (traveled >= target);
+  break;
+}
+
+    // ── STRAIGHT_MS: đi thẳng theo thời gian ───
+    case MS_STRAIGHT_MS: {
+      setMotors(spd, spd);
+      done = (millis() - _stepT0 >= (unsigned long)abs(s.param));
+      break;
+    }
+
+    // ── TURN_MS: quay tại chỗ ───────────────────
+    // s.speed > 0 = phải, s.speed < 0 = trái (set qua addTurnRight/Left)
+    case MS_TURN_MS: {
+      if (s.speed >= 0) setMotors( spd, -spd);
+      else              setMotors(-spd,  spd);
+      done = (millis() - _stepT0 >= (unsigned long)abs(s.param));
+      break;
+    }
+
+    // ── STOP_MS: dừng chờ ───────────────────────
+    case MS_STOP_MS: {
+      stopMotors();
+      done = (millis() - _stepT0 >= (unsigned long)s.param);
+      break;
+    }
+  }
+
+  // ── Chuyển bước tiếp ────────────────────────────
+  if (done) {
+    stopMotors();   // brake nhẹ giữa các bước
+    delay(30);      // 30ms settle (không blocking đáng kể)
+    _missionIdx++;
+    if (_missionIdx < _missionLen) _beginStep(_missionIdx);
+  }
+}
+
+// =====================================================
+// API GỌN CHO MAIN.CPP
+// - runPID(): gọi lặp lại trong loop() để xe dò line bằng PID
+// - hardMoveMM(mm, speed): gọi 1 lần để xe đi cứng theo khoảng cách encoder
+// =====================================================
+void resetPID() {
+  lastErr      = 0;
+  integralErr  = 0.0f;
+  filtDErr     = 0.0f;
+  lastFound    = false;
+  lostLineDir  = 0;
+  lostLineTime = millis();
+}
+
+void runPID() {
+  // Hàm này dùng cho kiểu main tự điều khiển:
+  // void loop() { LineBot::runPID(); }
+  // Không cần RUN/STOP BLE; hễ gọi hàm này thì PID sẽ chạy nếu đã calib xong.
+  handleInputs();
+  updateCalibration();
+
+  missionActive = false;
+
+  if (calibrated && calPhase == CAL_IDLE) {
+    robotState = ST_RUN;
+    runLineFollower();
+  } else {
+    robotState = (calPhase == CAL_IDLE) ? ST_STOP : ST_CAL;
+    stopMotors();
+    if (calPhase == CAL_IDLE) processSensors();
+  }
+
+  renderOLED();
+  renderSerial();
+  sendTelemetry();
+}
+
+bool hardMoveMM(int mm, int spd) {
+  // Hàm blocking: gọi 1 lần, xe tự đi đủ khoảng cách rồi dừng.
+  // mm > 0: tiến, mm < 0: lùi.
+  // Trả về true nếu đi xong, false nếu bị STOP hoặc timeout.
+  missionActive = false;
+
+  if (mm == 0) {
+    stopMotors();
+    return true;
+  }
+
+  spd = abs(spd);
+  if (spd == 0) spd = baseSpeed;
+  spd = constrain(spd, MIN_PWM, maxSpeed);
+
+  int dir = (mm >= 0) ? 1 : -1;
+  long target = (long)(fabsf((float)mm) * COUNTS_PER_MM);
+  if (target <= 0) target = 1;
+
+  long encL0 = motorL.encoder_get_count();
+  long encR0 = motorR.encoder_get_count();
+
+  robotState = ST_RUN;
+  Serial.printf("[HARD] Move %d mm, spd=%d, target=%ld cnt\n", mm, spd, target);
+
+  unsigned long t0 = millis();
+  unsigned long timeoutMs = (unsigned long)abs(mm) * 80UL + 3000UL; // chống kẹt encoder/motor
+
+  while (true) {
+    // Cho phép dừng khẩn bằng BLE STOP hoặc 1 trong 2 nút vật lý
+    if (bleCmdStop || buttonPressedEvent() || button2PressedEvent()) {
+      bleCmdStop = false;
+      stopMotors();
+      robotState = ST_STOP;
+      Serial.println("[HARD] Cancelled by STOP/button.");
+      return false;
+    }
+
+    long dL = labs(motorL.encoder_get_count() - encL0);
+    long dR = labs(motorR.encoder_get_count() - encR0);
+    long traveled = (dL + dR) / 2;
+
+    if (traveled >= target) break;
+
+    if (millis() - t0 > timeoutMs) {
+      stopMotors();
+      robotState = ST_STOP;
+      Serial.println("[HARD] Timeout. Check encoder/motor/wiring.");
+      return false;
+    }
+
+    long remain = target - traveled;
+    long rampCnt = (long)(80.0f * COUNTS_PER_MM); // giảm tốc trong 80mm cuối
+    int cmd = spd;
+
+    if (rampCnt > 0 && remain < rampCnt) {
+      cmd = HARD_MIN_PWM + (int)((long)(spd - HARD_MIN_PWM) * remain / rampCnt);
+      cmd = constrain(cmd, HARD_MIN_PWM, spd);
+    }
+
+    long diff = dL - dR;  // dL > dR: bánh trái đang đi xa hơn
+    int corr = constrain((int)(diff * HARD_STRAIGHT_KP), -HARD_CORR_MAX, HARD_CORR_MAX);
+
+    int lCmd = dir * (cmd - corr);
+    int rCmd = dir * (cmd + corr);
+    setMotors(lCmd, rCmd);
+
+    // Vẫn giữ OLED/BLE sống trong lúc đi cứng
+    renderOLED();
+    renderSerial();
+    sendTelemetry();
+    delay(5);
+  }
+
+  stopMotors();
+  delay(HARD_BRAKE_MS);
+  robotState = ST_STOP;
+  Serial.println("[HARD] Done.");
+  return true;
+}
+
 // =====================================================
 // Setup
 // =====================================================
@@ -1117,12 +1413,16 @@ void update() {
   updateCalibration();
 
   if (robotState == ST_RUN && calibrated && calPhase == CAL_IDLE) {
-    runLineFollower();
+    if (missionActive) {
+      runMission();
+    } else {
+      runLineFollower();
+    }
   } else {
-    // Không chạy → dừng motor, vẫn đọc cảm biến để debug
-    if (robotState != ST_CAL) stopMotors();
-    if (calibrated) processSensors();
-    else            readAllRaw();
+    // Khi STOP thì vẫn đọc cảm biến để OLED/Serial có dữ liệu mới
+    if (calPhase == CAL_IDLE) {
+      processSensors();
+    }
   }
 
   renderOLED();
@@ -1130,5 +1430,6 @@ void update() {
   sendTelemetry();
 }
 
-
 } // namespace LineBot
+
+

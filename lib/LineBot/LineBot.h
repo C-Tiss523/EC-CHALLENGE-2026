@@ -12,4 +12,8 @@
 namespace LineBot {
   void begin();
   void update();
+
+  void resetPID();
+  void runPID();
+  bool hardMoveMM(int mm, int spd = 0);
 }
